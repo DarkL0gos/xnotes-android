@@ -34,7 +34,7 @@ import java.util.zip.ZipEntry
  * replaces has the same exposure for far longer: it truncates the destination and then spends over
  * a second refilling it.
  */
-internal object ZipTail {
+object ZipTail {
 
     private const val EOCD_SIG = 0x06054b50
     private const val CD_SIG = 0x02014b50

@@ -74,3 +74,23 @@ JAVA_HOME=/path/to/jdk-17 ./gradlew assembleDebug
 ```
 
 Output: `app/build/outputs/apk/debug/app-debug.apk`
+
+## Linux desktop preview
+
+The `shared` JVM module contains the document models, editing math, and `.xnote` /
+`.xcanvas` codecs used by both hosts. The `desktop` module is a minimal Swing host:
+it opens either format, shows document information, and safely saves or copies the
+bundle. Drawing and PDF rendering are not part of this preview yet.
+
+With JDK 17 installed, build and run without an Android SDK:
+
+```bash
+./gradlew -PdesktopOnly=true :shared:test :desktop:test :desktop:installDist
+./desktop/build/install/desktop/bin/desktop /path/to/file.xnote
+```
+
+Omit the file argument to reopen the last file. The desktop preference file is
+stored under `$XDG_CONFIG_HOME/xnotes` (or `~/.config/xnotes`), and extracted
+document assets are kept under `$XDG_CACHE_HOME/xnotes` (or `~/.cache/xnotes`)
+while a file is open. The application does not modify the original bundle until
+Save is chosen.

@@ -20,4 +20,5 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "xnotes"
-include(":app")
+include(":shared", ":desktop")
+if (providers.gradleProperty("desktopOnly").orNull != "true") include(":app")

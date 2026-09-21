@@ -15,7 +15,7 @@ import kotlin.math.sin
  * position has already lost visible precision a million pixels out; the uploader splits each one
  * into a chunk index and a small local offset on its way to the GPU.
  */
-internal class MeshBuilder(vertexHint: Int = 64, indexHint: Int = 96) {
+class MeshBuilder(vertexHint: Int = 64, indexHint: Int = 96) {
 
     private var pos = DoubleArray(maxOf(8, vertexHint * 2))
     private var off = DoubleArray(maxOf(8, vertexHint * 2))
