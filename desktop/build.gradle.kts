@@ -9,6 +9,10 @@ kotlin {
     }
 }
 
+tasks.withType<JavaCompile>().configureEach {
+    options.release.set(17)
+}
+
 dependencies {
     implementation(project(":shared"))
     testImplementation("junit:junit:4.13.2")

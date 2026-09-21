@@ -82,7 +82,8 @@ The `shared` JVM module contains the document models, editing math, and `.xnote`
 it opens either format, shows document information, and safely saves or copies the
 bundle. Drawing and PDF rendering are not part of this preview yet.
 
-With JDK 17 installed, build and run without an Android SDK:
+With JDK 17 or 21 installed, build and run without an Android SDK. Both versions
+produce Java 17 compatible desktop bytecode:
 
 ```bash
 ./gradlew -PdesktopOnly=true :shared:test :desktop:test :desktop:installDist
