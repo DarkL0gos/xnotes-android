@@ -1,18 +1,21 @@
 package com.xnotes.desktop
 
 import java.awt.BorderLayout
+import java.awt.CardLayout
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
 import java.io.File
 import javax.swing.JButton
+import javax.swing.JCheckBox
 import javax.swing.JFileChooser
 import javax.swing.JFrame
 import javax.swing.JLabel
 import javax.swing.JOptionPane
 import javax.swing.JPanel
 import javax.swing.JScrollPane
+import javax.swing.JSlider
 import javax.swing.JTextArea
 import javax.swing.SwingUtilities
 import javax.swing.filechooser.FileNameExtensionFilter
@@ -23,6 +26,11 @@ private class DesktopWindow : JFrame("xnotes") {
     private val preferences = DesktopPreferences()
     private var document: OpenDocument? = null
     private val details = JTextArea()
+    private val pageView = PagedDocumentView()
+    private val pageScroll = JScrollPane(pageView)
+    private val cards = JPanel(CardLayout())
+    private var currentPage = 0
+    private val pageLabel = JLabel("Страница 0/0")
     private val status = JLabel("Откройте файл .xnote или .xcanvas")
 
     init {
@@ -36,9 +44,22 @@ private class DesktopWindow : JFrame("xnotes") {
             add(JButton("Открыть…").apply { addActionListener { chooseOpen() } })
             add(JButton("Сохранить").apply { addActionListener { save(false) } })
             add(JButton("Сохранить как…").apply { addActionListener { save(true) } })
+            add(JButton("←").apply { addActionListener { navigate(-1) } })
+            add(pageLabel)
+            add(JButton("→").apply { addActionListener { navigate(1) } })
+            add(JLabel("Масштаб"))
+            add(JSlider(15, 250, 65).apply {
+                preferredSize = Dimension(150, 24)
+                addChangeListener { pageView.setZoom(value / 100.0) }
+            })
+            add(JCheckBox("Тёмная бумага", true).apply {
+                addActionListener { pageView.setDarkPaper(isSelected) }
+            })
         }
         add(actions, BorderLayout.NORTH)
-        add(JScrollPane(details), BorderLayout.CENTER)
+        cards.add(JScrollPane(details), "details")
+        cards.add(pageScroll, "pages")
+        add(cards, BorderLayout.CENTER)
         add(status, BorderLayout.SOUTH)
         addWindowListener(object : WindowAdapter() {
             override fun windowClosed(event: WindowEvent) = storage.close()
@@ -51,6 +72,17 @@ private class DesktopWindow : JFrame("xnotes") {
         try {
             val opened = storage.open(file)
             document = opened
+            if (opened is OpenDocument.Note) {
+                pageView.show(opened.value)
+                currentPage = 0
+                updatePageLabel()
+                (cards.layout as CardLayout).show(cards, "pages")
+                pageScroll.viewport.viewPosition = java.awt.Point(0, 0)
+            } else {
+                pageView.show(null)
+                updatePageLabel()
+                (cards.layout as CardLayout).show(cards, "details")
+            }
             details.text = when (opened) {
                 is OpenDocument.Note -> buildString {
                     appendLine("Заметка: ${opened.file.name}")
@@ -70,6 +102,18 @@ private class DesktopWindow : JFrame("xnotes") {
         } catch (e: Exception) {
             showError(e)
         }
+    }
+
+    private fun navigate(delta: Int) {
+        if (document !is OpenDocument.Note || pageView.pageCount() == 0) return
+        currentPage = (currentPage + delta).coerceIn(0, pageView.pageCount() - 1)
+        updatePageLabel()
+        pageScroll.viewport.viewPosition = java.awt.Point(0, pageView.pageTop(currentPage))
+    }
+
+    private fun updatePageLabel() {
+        pageLabel.text = if (pageView.pageCount() == 0) "Страница 0/0"
+            else "Страница ${currentPage + 1}/${pageView.pageCount()}"
     }
 
     private fun chooseOpen() {

@@ -15,7 +15,13 @@ tasks.withType<JavaCompile>().configureEach {
 
 dependencies {
     implementation(project(":shared"))
+    implementation("org.apache.xmlgraphics:batik-transcoder:1.19")
+    implementation("org.apache.xmlgraphics:batik-codec:1.19")
     testImplementation("junit:junit:4.13.2")
+}
+
+tasks.processResources {
+    from("../app/src/main/assets/fonts") { into("fonts") }
 }
 
 application {

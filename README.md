@@ -78,9 +78,11 @@ Output: `app/build/outputs/apk/debug/app-debug.apk`
 ## Linux desktop preview
 
 The `shared` JVM module contains the document models, editing math, and `.xnote` /
-`.xcanvas` codecs used by both hosts. The `desktop` module is a minimal Swing host:
-it opens either format, shows document information, and safely saves or copies the
-bundle. Drawing and PDF rendering are not part of this preview yet.
+`.xcanvas` codecs used by both hosts. The `desktop` module is a Swing host: it opens
+either format, safely saves or copies the bundle, and displays paged `.xnote` files
+with vector ink, shapes, text, raster images, SVG images, page ruling, and zoom.
+Infinite `.xcanvas` files currently show document information only. Stylus editing
+and embedded PDF backgrounds are not available in this desktop preview yet.
 
 With JDK 17 or 21 installed, build and run without an Android SDK. Both versions
 produce Java 17 compatible desktop bytecode:
