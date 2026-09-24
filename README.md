@@ -96,7 +96,9 @@ Omit the file argument to reopen the last file. The desktop preference file is
 stored under `$XDG_CONFIG_HOME/xnotes` (or `~/.config/xnotes`), and extracted
 document assets are kept under `$XDG_CACHE_HOME/xnotes` (or `~/.cache/xnotes`)
 while a file is open. The application does not modify the original bundle until
-Save is chosen.
+Save is chosen. Unsaved edits are checkpointed under `$XDG_STATE_HOME/xnotes/session`
+(or `~/.local/state/xnotes/session`) and restored on the next launch after a crash or
+close; saving the document clears that session.
 
 The only native code, tree-sitter code highlighting, lives in `native/highlight` as a
 plain C library (`xn_highlight.h`) shared by the Android JNI bridge and future desktop
