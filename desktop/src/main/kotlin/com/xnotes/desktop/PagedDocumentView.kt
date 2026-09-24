@@ -18,6 +18,8 @@ import java.awt.Dimension
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.Rectangle
+import java.awt.geom.Rectangle2D
+import java.awt.image.BufferedImage
 import javax.swing.JPanel
 import javax.swing.Scrollable
 import javax.swing.SwingConstants
@@ -124,13 +126,39 @@ internal class PagedDocumentView : JPanel(), Scrollable {
                 if (!g.clipBounds.intersects(Rectangle(x.toInt(), y.toInt(), ceil(screenW).toInt(), ceil(screenH).toInt()))) continue
                 g.color = java.awt.Color(20, 22, 25)
                 g.fillRect(x.toInt() + 4, y.toInt() + 5, ceil(screenW).toInt(), ceil(screenH).toInt())
-                g.translate(x + margins.left * zoom, y + margins.top * zoom)
-                g.scale(zoom, zoom)
-                PagePainter.paint(g, doc, index, flowFrame, darkPaper)
-                g.scale(1.0 / zoom, 1.0 / zoom)
-                g.translate(-(x + margins.left * zoom), -(y + margins.top * zoom))
+                paintPageOffscreen(g, doc, index, x + margins.left * zoom, y + margins.top * zoom,
+                    Rectangle2D.Double(x, y, screenW, screenH))
             }
         } finally { g.dispose() }
+    }
+
+    /**
+     * Paints the visible part of one page into an offscreen image, then copies it to the screen.
+     * The highlighter's MULTIPLY blend reads the pixels beneath it, which on-screen Java2D
+     * surfaces (XRender on Linux) cannot provide, so pages are never painted onto them directly.
+     */
+    private fun paintPageOffscreen(g: Graphics2D, doc: Document, index: Int, originX: Double, originY: Double,
+                                   pageRect: Rectangle2D) {
+        val visible = pageRect.createIntersection(g.clipBounds)
+        if (visible.isEmpty) return
+        val deviceScale = g.transform.scaleX.coerceAtLeast(1.0)
+        val image = BufferedImage(ceil(visible.width * deviceScale).toInt().coerceAtLeast(1),
+            ceil(visible.height * deviceScale).toInt().coerceAtLeast(1), BufferedImage.TYPE_INT_ARGB)
+        val ig = image.createGraphics()
+        try {
+            ig.scale(deviceScale, deviceScale)
+            ig.translate(-visible.x, -visible.y)
+            ig.clip(visible)
+            ig.translate(originX, originY)
+            ig.scale(zoom, zoom)
+            PagePainter.paint(ig, doc, index, flowFrame, darkPaper)
+        } finally { ig.dispose() }
+        val target = g.create() as Graphics2D
+        try {
+            target.translate(visible.x, visible.y)
+            target.scale(1.0 / deviceScale, 1.0 / deviceScale)
+            target.drawImage(image, 0, 0, null)
+        } finally { target.dispose() }
     }
 
     override fun getPreferredScrollableViewportSize(): Dimension = Dimension(900, 650)
