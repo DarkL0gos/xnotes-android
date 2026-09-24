@@ -20,27 +20,21 @@ import com.xnotes.canvas.TextBar
 import com.xnotes.core.geometry.Pt
 import com.xnotes.core.geometry.Rect
 import com.xnotes.core.history.AddItem
-import com.xnotes.core.history.AddPage
 import com.xnotes.core.history.Command
 import com.xnotes.core.history.CompositeCommand
-import com.xnotes.core.history.DeletePage
-import com.xnotes.core.history.EraseItems
 import com.xnotes.core.history.History
 import com.xnotes.core.model.Bookmark
 import com.xnotes.core.model.CanvasItem
 import com.xnotes.core.model.Document
 import com.xnotes.core.model.ImageData
 import com.xnotes.core.model.ImageItem
-import com.xnotes.core.model.Orientation
 import com.xnotes.core.model.Page
 import com.xnotes.core.model.PageMargins
 import com.xnotes.core.model.PagePattern
-import com.xnotes.core.model.PageSize
 import com.xnotes.core.model.PageStyle
 import com.xnotes.core.model.Rgba
 import com.xnotes.core.pal.FontFace
 import com.xnotes.core.pal.Renderer
-import com.xnotes.core.model.deepCopy
 import com.xnotes.core.model.snapshot
 import com.xnotes.core.model.insets
 import com.xnotes.core.model.paintMarginPattern
@@ -70,6 +64,9 @@ import com.xnotes.core.tools.ToolDefaults
 import com.xnotes.core.tools.ToolbarLayout
 import com.xnotes.core.util.DocumentKind
 import com.xnotes.core.util.NameTemplate
+import com.xnotes.editor.EditorNotice
+import com.xnotes.editor.NoteEditor
+import com.xnotes.editor.NoteEditorHost
 import com.xnotes.format.DocumentCodec
 import com.xnotes.format.XNoteFormatException
 import com.xnotes.platform.AndroidImageCodec
@@ -743,12 +740,6 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     var pdfThumbTick by mutableStateOf(0)
         private set
 
-    /** Pages the side panel has selected, by **identity** so reorder/delete never breaks the set. */
-    private val selectedPages = mutableStateListOf<Page>()
-
-    /** Deep-cloned pages held for paste (cleared when the document changes). A snapshot list so
-     *  paste affordances recompose when it gains/loses contents. */
-    private val pageClipboard = mutableStateListOf<Page>()
 
     /** The current document's storage location (a SAF content URI string), or null. */
     val currentUri: String? get() = state.document.path
@@ -972,6 +963,37 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     private fun onRender() {
         if (controller.frontInk?.live != true) view.requestRender()
     }
+
+    /**
+     * The toolkit-free editor (shared with the desktop host): document swap, undo/redo, view and
+     * page commands, page styles. This class wires Android around it. Its page selection and
+     * clipboard are Compose snapshot lists, so the side panel recomposes when they change.
+     */
+    private val core = NoteEditor(
+        state,
+        history,
+        controller,
+        textMeasurer,
+        object : NoteEditorHost {
+            override fun requestRender() = view.requestRender()
+            override fun contentChanged() = refreshContent()
+            override fun viewChanged() = refreshView()
+            override fun notice(notice: EditorNotice) {
+                message = appContext.getString(
+                    when (notice) {
+                        EditorNotice.KEEP_ONE_PAGE -> R.string.err_keep_one_page
+                        EditorNotice.PAGE_ALREADY_EMPTY -> R.string.page_already_empty
+                    },
+                )
+            }
+            override fun beforeHistoryStep() = flowText.flushBurst()
+            override fun republishFlow() = republishFlowIfStale()
+            override fun afterHistoryRepair() {
+                if (flowText.active) flowInput.reconcile() // undone/redone text must reach the IME mirror
+            }
+        },
+        newPageList = { mutableStateListOf() },
+    )
 
     // One adapter per event stream: each is repointed at the next MotionEvent, never retained.
     private val touchEvent = com.xnotes.platform.AndroidPointerEvent()
@@ -1931,11 +1953,10 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     // --- page styles (paper colour + ruling): document-wide ("All Pages") and per-page ---
 
     /** The document-wide style override; per-page styles layer on top (see [PageStyle]). */
-    val documentStyle: PageStyle get() = state.document.style
+    val documentStyle: PageStyle get() = core.documentStyle
 
     /** The current page's own style override (an empty [PageStyle] when there is no page). */
-    val currentPageStyle: PageStyle
-        get() = state.document.pages.getOrNull(state.currentPageIndex())?.style ?: PageStyle()
+    val currentPageStyle: PageStyle get() = core.currentPageStyle
 
     /** The saved All Pages style stamped onto newly created notes (empty ⇒ app built-ins). */
     var newNoteStyle by mutableStateOf(settings.newNoteStyle)
@@ -1987,77 +2008,24 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     }
 
     /** Replace the document-wide ("All Pages") style override. */
-    fun setDocumentStyle(style: PageStyle) {
-        val prev = state.document.style
-        if (prev == style) return
-        state.document.style = style
-        applyStyleChange(prev, style, state.document.pages.toList())
-    }
+    fun setDocumentStyle(style: PageStyle) = core.setDocumentStyle(style)
 
     /** Replace the current page's style override. */
-    fun setCurrentPageStyle(style: PageStyle) {
-        val page = state.document.pages.getOrNull(state.currentPageIndex()) ?: return
-        val prev = page.style
-        if (prev == style) return
-        page.style = style
-        applyStyleChange(prev, style, listOf(page))
-    }
+    fun setCurrentPageStyle(style: PageStyle) = core.setCurrentPageStyle(style)
 
     // --- page margins (extra paper on any edge): document-wide ("All Pages") and per-page ---
 
     /** The document-wide margin override; per-page margins layer on top (see [PageMargins]). */
-    val documentMargins: PageMargins get() = state.document.margins
+    val documentMargins: PageMargins get() = core.documentMargins
 
     /** The current page's own margin override (an empty [PageMargins] when there is no page). */
-    val currentPageMargins: PageMargins
-        get() = state.document.pages.getOrNull(state.currentPageIndex())?.margins ?: PageMargins()
+    val currentPageMargins: PageMargins get() = core.currentPageMargins
 
     /** Replace the document-wide ("All Pages") margin override. */
-    fun setDocumentMargins(margins: PageMargins) {
-        if (state.document.margins == margins) return
-        state.document.margins = margins
-        applyMarginChange()
-    }
+    fun setDocumentMargins(margins: PageMargins) = core.setDocumentMargins(margins)
 
     /** Replace the current page's margin override. */
-    fun setCurrentPageMargins(margins: PageMargins) {
-        val page = state.document.pages.getOrNull(state.currentPageIndex()) ?: return
-        if (page.margins == margins) return
-        page.margins = margins
-        applyMarginChange()
-    }
-
-    /**
-     * Apply a margin change and persist it (dirty -> autosave) — deliberately **not** onto the undo
-     * stack, like a style change. A margin resizes the paper, so every cached surface is now the
-     * wrong shape: they are dropped rather than repaired, and the document is laid out again.
-     */
-    private fun applyMarginChange() {
-        state.invalidatePageGeometry()
-        state.relayout()
-        state.document.dirty = true
-        refreshContent()
-        view.requestRender()
-    }
-
-    /**
-     * Apply a style change to the caches and persist it (dirty -> autosave) — deliberately **not**
-     * onto the undo stack. The paper colour is filled live each frame, so a colour-only change just
-     * repaints; a ruling change ([pages] are the pages it may affect) rebuilds their background caches.
-     */
-    private fun applyStyleChange(prev: PageStyle, next: PageStyle, pages: List<Page>) {
-        val rulingChanged = prev.pattern != next.pattern ||
-            prev.patternColor != next.patternColor ||
-            prev.spacing != next.spacing
-        if (rulingChanged) {
-            if (pages.size == 1) state.invalidateBackground(pages[0]) else state.invalidateAllBackgrounds()
-        } else {
-            state.invalidatePaper()
-        }
-        state.document.dirty = true
-        refreshContent()
-        view.requestRender()
-    }
+    fun setCurrentPageMargins(margins: PageMargins) = core.setCurrentPageMargins(margins)
 
     // --- export-time style resolution: resolved against the document being exported (which may be a
     //     closed note loaded by URI, or a page subset), not necessarily the open one ---
@@ -4550,17 +4518,10 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         state.lastOpenCompacted = doc.compactedOnLoad
         state.openFileBytes = -1L
         state.lastSaveBytes = -1L
-        controller.commitTextEdit()
-        controller.clearSelection()
-        controller.resetGestureState() // drop the outgoing note's fling/elastic so it can't bleed in
-        clearPageSelection()
-        pageClipboard.clear() // clones reference the outgoing document; don't paste them into another
-        state.document = doc
-        rebuildPdfSource()
-        adoptOpenPdf(doc) // outgoing note's PDF source is now closed; delete its temp file
-        history.clear()
-        state.invalidateAllCaches()
-        state.relayout()
+        core.install(doc) {
+            rebuildPdfSource()
+            adoptOpenPdf(doc) // outgoing note's PDF source is now closed; delete its temp file
+        }
         installInitialView(doc.path) // this note's remembered view, or fit width — never the last note's
         refreshContent()
         view.requestRender()
@@ -4574,25 +4535,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     }
 
     /** Run the action a two/three-finger tap or stylus double-tap is mapped to; "none" does nothing. */
-    private fun dispatchTapGesture(action: String) = when (action) {
-        "undo" -> undo()
-        "redo" -> redo()
-        "toggle_pan" -> toggleTool(Tool.PAN)
-        "toggle_eraser" -> toggleTool(Tool.ERASER)
-        "toggle_previous" -> toggleToPreviousTool()
-        else -> Unit
-    }
-
-    /** Arm [target], or if it is already armed, return to the previous tool (no-op if none yet). */
-    private fun toggleTool(target: Tool) {
-        if (controller.tool == target) controller.previousTool?.let { selectTool(it) }
-        else selectTool(target)
-    }
-
-    /** Switch to the single previous tool; no-op on a fresh launch with no previous tool. */
-    private fun toggleToPreviousTool() {
-        controller.previousTool?.let { selectTool(it) }
-    }
+    private fun dispatchTapGesture(action: String) = core.dispatchTapGesture(action)
 
     fun pickColor(index: Int) {
         activeColorIndex = index
@@ -4640,95 +4583,20 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
 
     // --- history ---
 
-    fun undo() {
-        flowText.flushBurst() // the open typing burst is the first thing Ctrl+Z takes back
-        val command = history.nextUndo
-        val pagesBefore = state.document.pages.size
-        val was = touchedRegions(command)
-        history.undo()
-        afterHistory(
-            structural = state.document.pages.size != pagesBefore,
-            regions = spanning(was, touchedRegions(command)),
-        )
-    }
+    fun undo() = core.undo()
 
-    fun redo() {
-        flowText.flushBurst()
-        val command = history.nextRedo
-        val pagesBefore = state.document.pages.size
-        val was = touchedRegions(command)
-        history.redo()
-        afterHistory(
-            structural = state.document.pages.size != pagesBefore,
-            regions = spanning(was, touchedRegions(command)),
-        )
-    }
-
-    /**
-     * Where [command]'s items sit right now, page-local. Read on both sides of an undo/redo so an
-     * item that moved, resized or reflowed is repaired where it was *and* where it landed; null
-     * (the command can't say) asks for the old full repaint of every cached page.
-     */
-    private fun touchedRegions(command: Command?): List<Pair<Page, Rect>>? {
-        if (command == null) return emptyList()
-        return command.touched(itemPageLocator())?.map { (page, item) -> page to item.paintBounds() }
-    }
-
-    private fun spanning(
-        before: List<Pair<Page, Rect>>?,
-        after: List<Pair<Page, Rect>>?,
-    ): List<Pair<Page, Rect>>? = if (before == null || after == null) null else before + after
-
-    /**
-     * Finds the page an item sits on, for commands that hold items but not pages. The index is built
-     * on first use and only then: most commands carry their own page and never ask.
-     */
-    private fun itemPageLocator(): (CanvasItem) -> Page? {
-        var index: HashMap<CanvasItem, Page>? = null
-        return { item ->
-            val built = index ?: HashMap<CanvasItem, Page>().also { map ->
-                for (page in state.document.pages) for (it in page.items) map[it] = page
-                index = map
-            }
-            built[item]
-        }
-    }
-
-    private fun afterHistory(structural: Boolean, regions: List<Pair<Page, Rect>>?) {
-        controller.clearSelection()
-        if (structural) state.relayout() // page add/remove shifts layout; page-keyed caches survive
-        // The in-place repaint below reads the published flow snapshot: republish it first
-        // so an undone/redone flow edit repaints at its post-history layout.
-        republishFlowIfStale()
-        // Repair the ink caches rather than dropping them — dropping blanked every visible page to
-        // bare paper for a frame (the undo/redo flicker). Only AddPage/DeletePage change the page
-        // set, so relayout (which re-renders the sharp viewport) is gated on that. A command that
-        // named its regions repairs just those, here and now; one that couldn't hands every cached
-        // page to the cache thread instead, because repainting them all inline is a stall long
-        // enough to time out input on a dense note.
-        if (regions == null) state.refreshAllInk() else state.repairInkRegions(regions)
-        if (flowText.active) flowInput.reconcile() // undone/redone text must reach the IME mirror
-        state.document.dirty = true
-        state.clampScroll()
-        refreshContent()
-        view.requestRender()
-    }
+    fun redo() = core.redo()
 
     // --- view ---
 
-    private fun afterView() {
-        refreshView()
-        view.requestRender()
-    }
-
-    fun zoomIn() { state.zoomByStep(true); afterView() }
-    fun zoomOut() { state.zoomByStep(false); afterView() }
-    fun fitWidth() { state.fitWidth(); afterView() }
-    fun fitHeight() { state.fitHeight(); afterView() }
-    fun fitPage() { state.fitPage(); afterView() }
-    fun prevPage() { state.goToPage(state.prevPageIndex(state.currentPageIndex())); afterView() }
-    fun nextPage() { state.goToPage(state.nextPageIndex(state.currentPageIndex())); afterView() }
-    fun goToPage(index: Int) { state.goToPage(index); afterView() }
+    fun zoomIn() = core.zoomIn()
+    fun zoomOut() = core.zoomOut()
+    fun fitWidth() = core.fitWidth()
+    fun fitHeight() = core.fitHeight()
+    fun fitPage() = core.fitPage()
+    fun prevPage() = core.prevPage()
+    fun nextPage() = core.nextPage()
+    fun goToPage(index: Int) = core.goToPage(index)
 
     fun toggleZoomLock() {
         zoomLocked = !zoomLocked
@@ -4753,169 +4621,37 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
 
     // --- pages ---
 
-    /**
-     * Insert a blank page at [index] (clamped into range), sized from the page at [refIndex] so the
-     * note stays uniform (falling back to A4 portrait). Undoable; relayouts and refreshes. Returns
-     * the new page's final index.
-     */
-    private fun insertBlankPageAt(index: Int, refIndex: Int): Int {
-        val pages = state.document.pages
-        val ref = pages.getOrNull(refIndex) ?: pages.getOrNull(index) ?: pages.lastOrNull()
-        val (w, h) = if (ref != null) ref.width to ref.height else PageSize.A4.pixels(Orientation.PORTRAIT, state.document.dpi)
-        val at = index.coerceIn(0, pages.size)
-        val page = Page(w, h)
-        controller.clearSelection() // inserting shifts later page indices; drop any stale item selection
-        pages.add(at, page)
-        history.push(AddPage(state.document, page, at))
-        state.document.dirty = true
-        state.relayout()
-        refreshContent()
-        view.requestRender()
-        return at
-    }
-
-    /** Common tail for a side-panel page edit: re-layout, refresh the chrome, repaint. */
-    private fun afterPageEdit() {
-        controller.clearSelection()
-        state.document.dirty = true
-        state.relayout()
-        state.clampScroll()
-        refreshContent()
-        view.requestRender()
-    }
-
     /** Toolbar "Add page": insert a blank page right after the current one (sized from it) and go to it. */
-    fun addPage() {
-        val current = state.currentPageIndex()
-        val at = insertBlankPageAt(current + 1, current)
-        goToPage(at)
-    }
+    fun addPage() = core.addPage()
 
-    /**
-     * Append a blank page at the very end — used by the pull-past-the-end gesture. Stays at the
-     * current scroll position so the user is not yanked to the new page; they can scroll to it.
-     */
-    fun addPageAtEnd() {
-        insertBlankPageAt(state.document.pages.size, state.document.pages.lastIndex)
-    }
+    /** Append a blank page at the very end — used by the pull-past-the-end gesture. */
+    fun addPageAtEnd() = core.addPageAtEnd()
 
-    fun deleteCurrentPage() {
-        if (state.document.pages.size <= 1) {
-            message = appContext.getString(R.string.err_keep_one_page)
-            return
-        }
-        val index = state.currentPageIndex()
-        val page = state.document.pages[index]
-        state.document.pages.removeAt(index)
-        history.push(DeletePage(state.document, page, index))
-        state.document.dirty = true
-        state.invalidatePage(page)
-        state.relayout()
-        refreshContent()
-        view.requestRender()
-    }
+    fun deleteCurrentPage() = core.deleteCurrentPage()
 
     // --- side-panel page operations (operate on explicit page indices) ---
 
-    /** Insert a blank page right after [index] (sized from it) and reveal it. */
-    fun insertPageAfter(index: Int) {
-        goToPage(insertBlankPageAt(index + 1, index))
-    }
-
-    /** Clear all of a page's items but keep the page (and its PDF/template background). Undoable. */
-    fun erasePage(index: Int) {
-        val page = pageAt(index) ?: return
-        if (page.items.isEmpty()) { message = appContext.getString(R.string.page_already_empty); return }
-        val removals = page.items.map { page to it }
-        page.items.clear()
-        history.push(EraseItems(removals))
-        state.invalidatePage(page)
-        afterPageEdit()
-    }
-
-    /** Deep-clone [indices] (document order) into the page clipboard for a later paste. */
-    fun copyPages(indices: List<Int>) {
-        val pages = indices.distinct().sorted().mapNotNull { pageAt(it) }
-        if (pages.isEmpty()) return
-        pageClipboard.clear()
-        pages.forEach { pageClipboard.add(it.deepCopy(textMeasurer)) }
-    }
-
-    /** Copy [indices] to the clipboard then delete them (kept ≥ 1 page). */
-    fun cutPages(indices: List<Int>) {
-        if (indices.isEmpty()) return
-        if (indices.distinct().size >= state.document.pages.size) {
-            message = appContext.getString(R.string.err_keep_one_page)
-            return
-        }
-        copyPages(indices)
-        deletePages(indices)
-    }
-
-    /** Insert fresh clones of the page clipboard right after [index]; selects nothing, reveals the first. */
-    fun pastePagesAfter(index: Int) {
-        if (pageClipboard.isEmpty()) return
-        val pages = state.document.pages
-        val firstAt = (index + 1).coerceIn(0, pages.size)
-        var at = firstAt
-        val cmds = ArrayList<Command>()
-        for (src in pageClipboard) {
-            val clone = src.deepCopy(textMeasurer) // fresh clone each paste, so repeated pastes are independent
-            pages.add(at, clone)
-            cmds.add(AddPage(state.document, clone, at))
-            at++
-        }
-        history.push(CompositeCommand(cmds))
-        afterPageEdit()
-        goToPage(firstAt)
-    }
-
-    /** Delete [indices] as one undoable edit, refusing to empty the note. */
-    fun deletePages(indices: List<Int>) {
-        val pages = state.document.pages
-        val targets = indices.filter { it in pages.indices }.distinct().sortedDescending()
-        if (targets.isEmpty()) return
-        if (targets.size >= pages.size) {
-            message = appContext.getString(R.string.err_keep_one_page)
-            return
-        }
-        val cmds = ArrayList<Command>()
-        for (i in targets) { // descending, so each removeAt index stays valid and DeletePage stores the original index
-            val page = pages[i]
-            pages.removeAt(i)
-            state.invalidatePage(page)
-            cmds.add(DeletePage(state.document, page, i))
-        }
-        history.push(CompositeCommand(cmds))
-        clearPageSelection()
-        afterPageEdit()
-    }
+    fun insertPageAfter(index: Int) = core.insertPageAfter(index)
+    fun erasePage(index: Int) = core.erasePage(index)
+    fun copyPages(indices: List<Int>) = core.copyPages(indices)
+    fun cutPages(indices: List<Int>) = core.cutPages(indices)
+    fun pastePagesAfter(index: Int) = core.pastePagesAfter(index)
+    fun deletePages(indices: List<Int>) = core.deletePages(indices)
 
     // --- side-panel page selection (multi-select) ---
 
-    val canPastePages: Boolean get() = pageClipboard.isNotEmpty()
-    val pageSelectionCount: Int get() = selectedPages.size
-    val inPageSelectionMode: Boolean get() = selectedPages.isNotEmpty()
+    val canPastePages: Boolean get() = core.canPastePages
+    val pageSelectionCount: Int get() = core.pageSelectionCount
+    val inPageSelectionMode: Boolean get() = core.inPageSelectionMode
 
-    fun isPageSelected(index: Int): Boolean {
-        val p = pageAt(index) ?: return false
-        return selectedPages.any { it === p }
-    }
+    fun isPageSelected(index: Int): Boolean = core.isPageSelected(index)
 
     /** Selected page indices in document order. */
-    fun selectedPageIndices(): List<Int> =
-        state.document.pages.mapIndexedNotNull { i, p -> if (selectedPages.any { it === p }) i else null }
+    fun selectedPageIndices(): List<Int> = core.selectedPageIndices()
 
-    /** Toggle a page's membership in the selection (entering selection mode on the first add). */
-    fun togglePageSelection(index: Int) {
-        val p = pageAt(index) ?: return
-        val at = selectedPages.indexOfFirst { it === p }
-        if (at >= 0) selectedPages.removeAt(at) else selectedPages.add(p)
-    }
+    fun togglePageSelection(index: Int) = core.togglePageSelection(index)
 
-    fun clearPageSelection() {
-        if (selectedPages.isNotEmpty()) selectedPages.clear()
-    }
+    fun clearPageSelection() = core.clearPageSelection()
 
     // --- export a subset of pages (side-panel Share / Save as) ---
 
@@ -5534,7 +5270,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         controller.clearSelection()
         controller.resetGestureState() // drop the outgoing note's fling/elastic so it can't bleed in
         clearPageSelection()
-        pageClipboard.clear()
+        core.clearPageClipboard()
         state.invalidateAllCaches()
         state.relayout()
         installInitialView(null) // a fresh in-memory note: fit width

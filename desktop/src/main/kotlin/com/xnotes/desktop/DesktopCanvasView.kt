@@ -5,18 +5,17 @@ import com.xnotes.canvas.CanvasState
 import com.xnotes.canvas.ChromePalette
 import com.xnotes.canvas.InteractionController
 import com.xnotes.core.geometry.Pt
-import com.xnotes.core.geometry.Rect
-import com.xnotes.core.history.Command
 import com.xnotes.core.history.History
-import com.xnotes.core.model.CanvasItem
 import com.xnotes.core.model.Document
-import com.xnotes.core.model.Page
 import com.xnotes.core.model.Rgba
 import com.xnotes.core.text.FlowFrame
 import com.xnotes.core.text.FlowLayout
 import com.xnotes.core.text.FlowPainter
 import com.xnotes.core.text.PageBox
 import com.xnotes.core.tools.Tool
+import com.xnotes.editor.EditorNotice
+import com.xnotes.editor.NoteEditor
+import com.xnotes.editor.NoteEditorHost
 import com.xnotes.input.PointerEvent
 import com.xnotes.input.PointerSample
 import com.xnotes.input.SimplePointerEvent
@@ -69,6 +68,18 @@ internal class DesktopCanvasView : JComponent() {
     /** Undo availability may have changed. */
     var onHistoryChanged: () -> Unit = {}
 
+    /** The editor declined a command (e.g. deleting the last page); the host tells the user. */
+    var onNotice: (EditorNotice) -> Unit = {}
+
+    /** Document, history, view and page commands, shared with the Android editor. */
+    val editor = NoteEditor(state, history, controller, DesktopTextMeasurer, object : NoteEditorHost {
+        override fun requestRender() = repaint()
+        override fun contentChanged() = this@DesktopCanvasView.contentChanged()
+        override fun viewChanged() = onViewChanged()
+        override fun notice(notice: EditorNotice) = onNotice(notice)
+        override fun republishFlow() = relayoutFlow()
+    })
+
     private val cacheThread = Executors.newSingleThreadExecutor { r -> Thread(r, "xnotes-cache").apply { isDaemon = true } }
     private val sharpSettle = Timer(SHARP_SETTLE_MS) { state.requestSharpViewport() }.apply { isRepeats = false }
     private var buffer: BufferedImage? = null
@@ -115,13 +126,7 @@ internal class DesktopCanvasView : JComponent() {
 
     /** Show [doc], dropping everything that belonged to the previous one. */
     fun show(doc: Document) {
-        controller.commitTextEdit()
-        controller.clearSelection()
-        controller.resetGestureState()
-        state.document = doc
-        history.clear()
-        relayoutFlow()
-        state.invalidateAllCaches()
+        editor.install(doc) { relayoutFlow() }
         state.didInitialFit = false
         layoutViewport()
         onHistoryChanged()
@@ -149,34 +154,20 @@ internal class DesktopCanvasView : JComponent() {
         repaint()
     }
 
-    fun zoomStep(zoomIn: Boolean) {
-        state.zoomByStep(zoomIn)
-        viewChanged()
-    }
+    fun zoomStep(zoomIn: Boolean) = if (zoomIn) editor.zoomIn() else editor.zoomOut()
 
-    fun fitWidth() {
-        state.fitWidth()
-        viewChanged()
-    }
+    fun fitWidth() = editor.fitWidth()
 
-    fun goToPage(index: Int) {
-        state.goToPage(index)
-        viewChanged()
-    }
+    fun goToPage(index: Int) = editor.goToPage(index)
 
     fun escape() = controller.escape()
     fun deleteSelection() = controller.deleteSelection()
     fun selectAll() = controller.selectAll()
 
-    fun undo() {
-        val command = history.nextUndo ?: return
-        applyHistory(command) { history.undo() }
-    }
+    // Shortcuts fire even with nothing to take back, and a history step marks the note edited.
+    fun undo() { if (history.canUndo) editor.undo() }
 
-    fun redo() {
-        val command = history.nextRedo ?: return
-        applyHistory(command) { history.redo() }
-    }
+    fun redo() { if (history.canRedo) editor.redo() }
 
     /** The view to persist in the session. */
     fun viewState(): Map<String, Double> =
@@ -196,38 +187,6 @@ internal class DesktopCanvasView : JComponent() {
         sharpSettle.stop()
         scheduler.shutdown()
         cacheThread.shutdownNow()
-    }
-
-    /**
-     * Undo/redo, then repair only what the command touched: its regions before and after, or every
-     * page when it can't say. Page adds/removes also relayout. Mirrors the Android editor.
-     */
-    private fun applyHistory(command: Command, step: () -> Unit) {
-        val pagesBefore = state.document.pages.size
-        val before = touchedRegions(command)
-        step()
-        val after = touchedRegions(command)
-        controller.clearSelection()
-        if (state.document.pages.size != pagesBefore) state.relayout()
-        relayoutFlow()
-        if (before == null || after == null) state.refreshAllInk() else state.repairInkRegions(before + after)
-        state.document.dirty = true
-        state.clampScroll()
-        onHistoryChanged()
-        onEdited()
-        repaint()
-    }
-
-    private fun touchedRegions(command: Command): List<Pair<Page, Rect>>? {
-        var index: HashMap<CanvasItem, Page>? = null
-        val locate: (CanvasItem) -> Page? = { item ->
-            val built = index ?: HashMap<CanvasItem, Page>().also { map ->
-                for (page in state.document.pages) for (it in page.items) map[it] = page
-                index = map
-            }
-            built[item]
-        }
-        return command.touched(locate)?.map { (page, item) -> page to item.paintBounds() }
     }
 
     private fun contentChanged() {

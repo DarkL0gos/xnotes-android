@@ -2,6 +2,7 @@ package com.xnotes.desktop
 
 import com.xnotes.core.model.Rgba
 import com.xnotes.core.tools.Tool
+import com.xnotes.editor.EditorNotice
 import java.awt.BorderLayout
 import java.awt.CardLayout
 import java.awt.Color
@@ -74,6 +75,14 @@ private class DesktopWindow : JFrame("xnotes") {
             add(zoomLabel)
             add(JButton("+").apply { addActionListener { canvas.zoomStep(true) } })
             add(JButton("По ширине").apply { addActionListener { canvas.fitWidth() } })
+            add(JButton("+ Страница").apply {
+                toolTipText = "Вставить пустую страницу после текущей"
+                addActionListener { if (document is OpenDocument.Note) canvas.editor.addPage() }
+            })
+            add(JButton("− Страница").apply {
+                toolTipText = "Удалить текущую страницу"
+                addActionListener { if (document is OpenDocument.Note) canvas.editor.deleteCurrentPage() }
+            })
             add(JCheckBox("Тёмная бумага", true).apply {
                 addActionListener { canvas.setDarkPaper(isSelected) }
             })
@@ -99,7 +108,16 @@ private class DesktopWindow : JFrame("xnotes") {
 
         canvas.onEdited = { documentEdited() }
         canvas.onViewChanged = { updateViewReadouts() }
-        canvas.onHistoryChanged = { updateHistoryButtons() }
+        canvas.onHistoryChanged = {
+            updateHistoryButtons()
+            updateViewReadouts() // page count follows page edits
+        }
+        canvas.onNotice = { notice ->
+            status.text = when (notice) {
+                EditorNotice.KEEP_ONE_PAGE -> "В заметке должна остаться хотя бы одна страница"
+                EditorNotice.PAGE_ALREADY_EMPTY -> "Страница уже пуста"
+            }
+        }
         selectTool(Tool.PEN)
         updateColorButton()
         updateHistoryButtons()
