@@ -2,6 +2,7 @@ package com.xnotes.desktop
 
 import com.xnotes.core.geometry.Pt
 import com.xnotes.core.model.Document
+import com.xnotes.core.model.PagePattern
 import com.xnotes.core.model.Rgba
 import com.xnotes.core.model.Stroke
 import com.xnotes.core.tools.Tool
@@ -151,4 +152,51 @@ class DesktopCanvasViewTest {
         assertEquals(0.8, saved["zoom"]!!, 1e-9)
         assertEquals(500.0, saved["scrollY"]!!, 1e-9)
     }
+
+    /** Bounding box (x0, y0, x1, y1) of the ink pixels in a frame, or null when there are none. */
+    private fun inkBox(image: BufferedImage): IntArray? {
+        var x0 = Int.MAX_VALUE; var y0 = Int.MAX_VALUE; var x1 = -1; var y1 = -1
+        for (y in 0 until image.height) for (x in 0 until image.width) if (isInk(image.getRGB(x, y))) {
+            if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y
+        }
+        return if (x1 < 0) null else intArrayOf(x0, y0, x1, y1)
+    }
+
+    /**
+     * A filed stroke used to land off to the side, shrunk by the zoom, until the page cache was
+     * rebuilt: every raster surface handed out one shared painter, so transforms stacked up.
+     */
+    @Test fun aFiledStrokeStaysWhereItWasDrawn() {
+        setUp()
+        onEdt {
+            view.setTool(Tool.PEN)
+            view.inkColor = Rgba(0, 0, 0)
+        }
+        val a = onFirstPage(0.2, 0.3)
+        val b = onFirstPage(0.7, 0.3)
+        onEdt { mouse(MouseEvent.MOUSE_PRESSED, a) }
+        for (i in 1..20) onEdt { mouse(MouseEvent.MOUSE_DRAGGED, Pt(a.x + (b.x - a.x) * i / 20, a.y)) }
+        var live: IntArray? = null
+        paintedUntil { live = inkBox(it); live != null }
+        onEdt { mouse(MouseEvent.MOUSE_RELEASED, b, 0) }
+        // Two strokes in a row: the second append reuses the cache the first one drew into.
+        drag(onFirstPage(0.2, 0.6), onFirstPage(0.7, 0.6))
+
+        var filed: IntArray? = null
+        assertTrue(paintedUntil { filed = inkBox(it); filed != null && filed!![3] > live!![3] + 50 })
+        for (k in 0..2) assertTrue("left/top edge moved: live=${live!!.toList()} filed=${filed!!.toList()}",
+            kotlin.math.abs(live!![k] - filed!![k]) <= 3)
+    }
+
+    @Test fun pageRulingIsPainted() {
+        val doc = Document.blank(count = 1).apply { pages[0].style = pages[0].style.copy(pattern = PagePattern.LINES) }
+        setUp(doc)
+        val probe = onFirstPage(0.5, 0.5)
+        // Lined paper: somewhere in a band of rows through the page there is a line that isn't paper.
+        assertTrue("expected ruling lines on the page", paintedUntil { image ->
+            val x = probe.x.toInt()
+            (probe.y.toInt() - 40..probe.y.toInt() + 40).any { y -> image.getRGB(x, y) and 0xffffff != 0xffffff }
+        })
+    }
+
 }

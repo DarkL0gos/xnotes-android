@@ -1206,7 +1206,6 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         state.paintPageBackground = { page, renderer, res, region ->
             val src = pdfSource
             val pi = page.pdfPage
-            val content = com.xnotes.core.geometry.Rect(0.0, 0.0, page.width, page.height)
             if (src != null && pi != null) {
                 // The raster covers the page's content box only; a margin is paper beside it.
                 val slice = clampToContent(region, page)
@@ -1223,19 +1222,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
                     }
                 }
             }
-            // A ruling covers a blank note page whole; on an imported PDF page it rules the
-            // margins only, so the page itself is never drawn over.
-            val pattern = state.effectivePattern(page)
-            if (pattern != PagePattern.NONE) {
-                val color = state.effectivePatternColor(page)
-                val spacing = state.effectiveSpacing(page)
-                val cover = state.footprint(page)
-                if (pi == null) {
-                    paintPagePattern(renderer, pattern, color, spacing, cover, region)
-                } else {
-                    paintMarginPattern(renderer, pattern, color, spacing, cover, content, region)
-                }
-            }
+            state.paintRuling(page, renderer, region)
         }
     }
 

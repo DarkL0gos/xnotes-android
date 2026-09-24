@@ -19,7 +19,11 @@ interface RasterSurface {
     /** Clear to a solid colour, including fully transparent. */
     fun fill(color: Rgba)
 
-    /** A [Renderer] that draws **into** this surface. */
+    /**
+     * A [Renderer] that draws **into** this surface. Each call returns a fresh one with an identity
+     * transform and no clip: callers scale/translate/clip it for their own use without saving, so a
+     * shared painter would carry one caller's transform into the next.
+     */
     fun renderer(): Renderer
 
     /** Release backing memory. Optional; safe to call more than once. */

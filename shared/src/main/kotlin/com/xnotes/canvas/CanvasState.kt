@@ -11,6 +11,8 @@ import com.xnotes.core.model.PagePattern
 import com.xnotes.core.model.Rgba
 import com.xnotes.core.model.Stroke
 import com.xnotes.core.model.insets
+import com.xnotes.core.model.paintMarginPattern
+import com.xnotes.core.model.paintPagePattern
 import com.xnotes.core.model.resolvedPageColor
 import com.xnotes.core.model.resolvedPattern
 import com.xnotes.core.model.resolvedPatternColor
@@ -655,6 +657,24 @@ class CanvasState(
     fun effectivePatternColor(page: Page): Rgba = page.resolvedPatternColor(document)
 
     fun effectiveSpacing(page: Page): Double = page.resolvedSpacing(document)
+
+    /**
+     * The page's ruling, for a [paintPageBackground] hook (page space, clipped to [region]). A ruling
+     * covers a blank note page whole; on an imported PDF page it rules the margins only, so the
+     * page itself is never drawn over.
+     */
+    fun paintRuling(page: Page, renderer: Renderer, region: Rect) {
+        val pattern = effectivePattern(page)
+        if (pattern == PagePattern.NONE) return
+        val color = effectivePatternColor(page)
+        val spacing = effectiveSpacing(page)
+        val cover = footprint(page)
+        if (page.pdfPage == null) {
+            paintPagePattern(renderer, pattern, color, spacing, cover, region)
+        } else {
+            paintMarginPattern(renderer, pattern, color, spacing, cover, Rect(0.0, 0.0, page.width, page.height), region)
+        }
+    }
 
     fun paperColor(page: Page): Rgba = effectivePageColor(page) ?: palette.paper
 

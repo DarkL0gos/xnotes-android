@@ -39,10 +39,6 @@ internal class DesktopRasterSurface(
     override val devicePixelRatio: Double = 1.0,
 ) : RasterSurface {
     val image = BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)
-    private val painterHandle = lazy {
-        DesktopRenderer(image.createGraphics().apply { clipRect(0, 0, width, height) })
-    }
-    private val painter by painterHandle
 
     override fun fill(color: Rgba) {
         val g = image.createGraphics()
@@ -53,9 +49,10 @@ internal class DesktopRasterSurface(
         } finally { g.dispose() }
     }
 
-    override fun renderer(): Renderer = painter
+    /** A fresh painter each call, like Android's `Canvas(bitmap)`: callers set their own transform. */
+    override fun renderer(): Renderer = DesktopRenderer(image.createGraphics())
+
     override fun recycle() {
-        if (painterHandle.isInitialized()) painter.close()
         image.flush()
     }
 }
@@ -191,12 +188,18 @@ internal class DesktopRenderer(root: Graphics2D) : Renderer, AutoCloseable {
         g.fill(shape)
     }
 
-    private fun pen(pen: Pen) {
-        g.color = pen.color.awt()
+    /** User-space units per pen unit: a cosmetic pen is sized in device pixels, so it undoes the transform's scale. */
+    private fun penFactor(pen: Pen): Double {
+        if (!pen.cosmetic) return 1.0
         val transform = g.transform
         val scale = max(1e-6, (hypot(transform.scaleX, transform.shearY) +
             hypot(transform.shearX, transform.scaleY)) / 2.0)
-        val factor = if (pen.cosmetic) 1.0 / scale else 1.0
+        return 1.0 / scale
+    }
+
+    private fun pen(pen: Pen) {
+        g.color = pen.color.awt()
+        val factor = penFactor(pen)
         val dash = if (pen.dashed) floatArrayOf(
             (pen.dashOn * factor).coerceAtLeast(0.1).toFloat(),
             (pen.dashGap * factor).coerceAtLeast(0.1).toFloat()
@@ -207,7 +210,21 @@ internal class DesktopRenderer(root: Graphics2D) : Renderer, AutoCloseable {
     }
 
     override fun strokeRect(rect: Rect, pen: Pen) {
-        pen(pen); g.draw(Rectangle2D.Double(rect.x, rect.y, rect.w, rect.h))
+        if (pen.dashed || pen.glowRadius > 0.0) {
+            pen(pen); g.draw(Rectangle2D.Double(rect.x, rect.y, rect.w, rect.h))
+            return
+        }
+        // A plain outline as four thin fills. Marlin rasterizes a stroked shape over its whole
+        // bounding box, so the hairline border of a full page cost most of a frame; the four edge
+        // strips only cover themselves. Laid out edge to edge, so corners are painted once.
+        val half = (pen.width * penFactor(pen)) / 2.0
+        val outer = Rectangle2D.Double(rect.x - half, rect.y - half, rect.w + 2 * half, rect.h + 2 * half)
+        val t = 2 * half
+        g.color = pen.color.awt()
+        g.fill(Rectangle2D.Double(outer.x, outer.y, outer.width, t))
+        g.fill(Rectangle2D.Double(outer.x, outer.y + outer.height - t, outer.width, t))
+        g.fill(Rectangle2D.Double(outer.x, outer.y + t, t, outer.height - 2 * t))
+        g.fill(Rectangle2D.Double(outer.x + outer.width - t, outer.y + t, t, outer.height - 2 * t))
     }
     override fun strokePolyline(points: List<Pt>, pen: Pen) {
         if (points.size < 2) return
@@ -224,8 +241,38 @@ internal class DesktopRenderer(root: Graphics2D) : Renderer, AutoCloseable {
     override fun drawRaster(raster: RasterSurface, dest: Rect, src: Rect?) {
         val image = (raster as? DesktopRasterSurface)?.image ?: return
         val s = src ?: Rect(0.0, 0.0, image.width.toDouble(), image.height.toDouble())
+        if (blitUnscaled(image, dest, s)) return
         g.drawImage(image, dest.left.toInt(), dest.top.toInt(), ceil(dest.right).toInt(), ceil(dest.bottom).toInt(),
             s.left.toInt(), s.top.toInt(), ceil(s.right).toInt(), ceil(s.bottom).toInt(), null)
+    }
+
+    /**
+     * Page caches are rendered at the resolution they are shown at, so their blit is a 1:1 copy
+     * that only *looks* scaled (a page-space rect under a zoom transform). Java2D would take its
+     * interpolating transform path for that, which cost several ms per page per frame; drawn at
+     * whole device pixels with no transform it is a plain copy. Falls back when rotated or truly scaled.
+     */
+    private fun blitUnscaled(image: BufferedImage, dest: Rect, s: Rect): Boolean {
+        val t = g.transform
+        if (t.shearX != 0.0 || t.shearY != 0.0 || t.scaleX <= 0.0 || t.scaleY <= 0.0) return false
+        val w = dest.w * t.scaleX
+        val h = dest.h * t.scaleY
+        // Caches are sized with ceil(), so a 1:1 blit can be up to a pixel short of its surface.
+        if (kotlin.math.abs(w - s.w) >= 1.0 || kotlin.math.abs(h - s.h) >= 1.0) return false
+        val x = Math.round(dest.left * t.scaleX + t.translateX).toInt()
+        val y = Math.round(dest.top * t.scaleY + t.translateY).toInt()
+        val sx = s.left.toInt()
+        val sy = s.top.toInt()
+        val sw = Math.round(s.w).toInt()
+        val sh = Math.round(s.h).toInt()
+        val saved = g.transform
+        try {
+            g.transform = AffineTransform()
+            g.drawImage(image, x, y, x + sw, y + sh, sx, sy, sx + sw, sy + sh, null)
+        } finally {
+            g.transform = saved
+        }
+        return true
     }
 
     override fun drawImage(image: ImageData, dest: Rect, orientation: Int, angle: Double) {
@@ -291,28 +338,58 @@ private class BlendComposite(private val mode: BlendMode, private val alpha: Flo
         override fun compose(src: Raster, dstIn: Raster, dstOut: WritableRaster) {
             val width = minOf(src.width, dstIn.width, dstOut.width)
             val height = minOf(src.height, dstIn.height, dstOut.height)
-            for (y in 0 until height) for (x in 0 until width) {
-                val s = srcColorModel.getRGB(src.getDataElements(src.minX + x, src.minY + y, null))
-                val d = dstColorModel.getRGB(dstIn.getDataElements(dstIn.minX + x, dstIn.minY + y, null))
-                val sa = ((s ushr 24) and 255) / 255.0 * alpha
-                val da = ((d ushr 24) and 255) / 255.0
-                val outA = sa + da * (1 - sa)
-                var out = (outA * 255 + 0.5).toInt().coerceIn(0, 255) shl 24
-                for (shift in intArrayOf(16, 8, 0)) {
-                    val sc = ((s ushr shift) and 255) / 255.0
-                    val dc = ((d ushr shift) and 255) / 255.0
-                    val mixed = when (mode) {
-                        BlendMode.MULTIPLY -> sc * dc
-                        BlendMode.SCREEN -> 1 - (1 - sc) * (1 - dc)
-                        BlendMode.SRC_OVER -> sc
+            // Rows as packed ARGB ints: per-pixel getDataElements/getRGB allocated for every pixel
+            // and made each highlighter composite cost milliseconds.
+            val direct = isPlainArgb(srcColorModel) && isPlainArgb(dstColorModel)
+            val sRow = IntArray(width)
+            val dRow = IntArray(width)
+            for (y in 0 until height) {
+                if (direct) {
+                    src.getDataElements(src.minX, src.minY + y, width, 1, sRow)
+                    dstIn.getDataElements(dstIn.minX, dstIn.minY + y, width, 1, dRow)
+                } else {
+                    for (x in 0 until width) {
+                        sRow[x] = srcColorModel.getRGB(src.getDataElements(src.minX + x, src.minY + y, null))
+                        dRow[x] = dstColorModel.getRGB(dstIn.getDataElements(dstIn.minX + x, dstIn.minY + y, null))
                     }
-                    val value = if (outA == 0.0) 0.0 else
-                        (sa * (1 - da) * sc + da * (1 - sa) * dc + sa * da * mixed) / outA
-                    out = out or ((value * 255 + 0.5).toInt().coerceIn(0, 255) shl shift)
                 }
-                dstOut.setDataElements(dstOut.minX + x, dstOut.minY + y,
-                    dstColorModel.getDataElements(out, null))
+                for (x in 0 until width) dRow[x] = blend(sRow[x], dRow[x])
+                if (direct) {
+                    dstOut.setDataElements(dstOut.minX, dstOut.minY + y, width, 1, dRow)
+                } else {
+                    for (x in 0 until width) {
+                        dstOut.setDataElements(dstOut.minX + x, dstOut.minY + y, dstColorModel.getDataElements(dRow[x], null))
+                    }
+                }
             }
         }
+
+        private fun blend(s: Int, d: Int): Int {
+            val sa = ((s ushr 24) and 255) / 255.0 * alpha
+            if (sa == 0.0) return d
+            val da = ((d ushr 24) and 255) / 255.0
+            val outA = sa + da * (1 - sa)
+            var out = (outA * 255 + 0.5).toInt().coerceIn(0, 255) shl 24
+            var shift = 16
+            while (shift >= 0) {
+                val sc = ((s ushr shift) and 255) / 255.0
+                val dc = ((d ushr shift) and 255) / 255.0
+                val mixed = when (mode) {
+                    BlendMode.MULTIPLY -> sc * dc
+                    BlendMode.SCREEN -> 1 - (1 - sc) * (1 - dc)
+                    BlendMode.SRC_OVER -> sc
+                }
+                val value = if (outA == 0.0) 0.0 else
+                    (sa * (1 - da) * sc + da * (1 - sa) * dc + sa * da * mixed) / outA
+                out = out or ((value * 255 + 0.5).toInt().coerceIn(0, 255) shl shift)
+                shift -= 8
+            }
+            return out
+        }
     }
+
+    /** Non-premultiplied 8-bit ARGB in one int (TYPE_INT_ARGB), whose rows can be read as packed pixels. */
+    private fun isPlainArgb(model: ColorModel): Boolean =
+        model is java.awt.image.DirectColorModel && !model.isAlphaPremultiplied && model.pixelSize == 32 &&
+            model.alphaMask == -0x1000000 && model.redMask == 0xff0000 && model.greenMask == 0xff00 && model.blueMask == 0xff
 }

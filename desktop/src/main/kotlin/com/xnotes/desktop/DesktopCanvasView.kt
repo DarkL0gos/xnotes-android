@@ -86,6 +86,9 @@ internal class DesktopCanvasView : JComponent() {
         state.runAsync = { work -> cacheThread.execute(work) }
         state.postToMain = { work -> SwingUtilities.invokeLater(work) }
         state.onCacheReady = { repaint() }
+        // Page ruling. Embedded PDF pages are not rendered on the desktop yet, so they show only
+        // their margin ruling over the paper.
+        state.paintPageBackground = { page, renderer, _, region -> state.paintRuling(page, renderer, region) }
         state.paintFlow = { page, renderer, region ->
             val frame = flowFrame
             val index = state.document.pages.indexOfFirst { it === page }
