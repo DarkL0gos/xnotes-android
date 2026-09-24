@@ -5,6 +5,8 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.xnotes.canvas.CanvasPointerMode
+import com.xnotes.canvas.InfiniteInteraction
 import com.xnotes.canvas.InteractionController
 import com.xnotes.core.geometry.Pt
 import com.xnotes.core.geometry.Rect
@@ -84,9 +86,18 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
 
     val viewport: CanvasViewport get() = view.viewport
 
+    /** The main thread's timers for the gesture controller. */
+    private val uiScheduler = com.xnotes.platform.AndroidUiScheduler()
+
+    // One adapter per event stream: each is repointed at the next MotionEvent, never retained.
+    private val touchEvent = com.xnotes.platform.AndroidPointerEvent()
+    private val genericEvent = com.xnotes.platform.AndroidPointerEvent()
+
     val interaction = InfiniteInteraction(
         viewport = view.viewport,
         requestRender = { view.publish() },
+        scheduler = uiScheduler,
+        isVectorFile = { com.xnotes.platform.ImageDecoder.isVector(it) },
         onViewChanged = { onViewChanged() },
         setInteractive = { active, linger -> view.setInteractive(active, linger) },
         configFor = { configFor(it) },
@@ -249,8 +260,8 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
     }
 
     init {
-        view.input = { interaction.onTouch(it) }
-        view.genericMotion = { interaction.onGenericMotion(it) }
+        view.input = { interaction.onTouch(touchEvent.wrap(it)) }
+        view.genericMotion = { interaction.onGenericMotion(genericEvent.wrap(it)) }
         view.afterLayout = { applyInitialView() }
         view.onContextReady = { renderFailure = view.failure }
         pad.onSurfaceLost = { endFrontInk(); settleHeld() }

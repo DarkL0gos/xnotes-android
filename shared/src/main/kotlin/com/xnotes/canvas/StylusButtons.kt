@@ -1,7 +1,7 @@
 package com.xnotes.canvas
 
-import android.view.KeyEvent
-import android.view.MotionEvent
+import com.xnotes.input.KeyCodes
+import com.xnotes.input.PointerEvent
 
 /**
  * Whether a stylus side button is currently down.
@@ -34,8 +34,8 @@ class StylusButtonLatch {
      * a pen that reports on both this stream and as a key event cannot latch stuck on. Returns true
      * when the button has just gone up, so a caller can end a hovering gesture.
      */
-    fun onGenericMotion(e: MotionEvent): Boolean {
-        if (e.getToolType(0) != MotionEvent.TOOL_TYPE_STYLUS) return false
+    fun onGenericMotion(e: PointerEvent): Boolean {
+        if (e.getToolType(0) != PointerEvent.TOOL_TYPE_STYLUS) return false
         held = (e.buttonState and InteractionController.STYLUS_BUTTON_MASK) != 0
         return !held
     }
@@ -55,16 +55,16 @@ class StylusButtonLatch {
     }
 
     /** Whether [e] is a stylus contact with the side button down, on either route. */
-    fun heldFor(e: MotionEvent): Boolean =
-        e.getToolType(0) == MotionEvent.TOOL_TYPE_STYLUS &&
+    fun heldFor(e: PointerEvent): Boolean =
+        e.getToolType(0) == PointerEvent.TOOL_TYPE_STYLUS &&
             ((e.buttonState and InteractionController.STYLUS_BUTTON_MASK) != 0 || held)
 
     companion object {
         fun isStylusButtonKey(keyCode: Int): Boolean =
-            keyCode == KeyEvent.KEYCODE_STYLUS_BUTTON_PRIMARY ||
-                keyCode == KeyEvent.KEYCODE_STYLUS_BUTTON_SECONDARY ||
-                keyCode == KeyEvent.KEYCODE_STYLUS_BUTTON_TERTIARY ||
-                keyCode == KeyEvent.KEYCODE_STYLUS_BUTTON_TAIL ||
+            keyCode == KeyCodes.KEYCODE_STYLUS_BUTTON_PRIMARY ||
+                keyCode == KeyCodes.KEYCODE_STYLUS_BUTTON_SECONDARY ||
+                keyCode == KeyCodes.KEYCODE_STYLUS_BUTTON_TERTIARY ||
+                keyCode == KeyCodes.KEYCODE_STYLUS_BUTTON_TAIL ||
                 keyCode == InteractionController.VENDOR_HELD_BUTTON_KEYCODE
     }
 }

@@ -1,17 +1,10 @@
-package com.xnotes.ui
+package com.xnotes.canvas
 
-import android.os.Handler
-import android.os.Looper
-import android.view.Choreographer
-import android.view.KeyEvent
-import android.view.MotionEvent
-import com.xnotes.canvas.InteractionController
-import com.xnotes.canvas.StylusButtonLatch
+import com.xnotes.input.FrameCallback
+import com.xnotes.input.PointerEvent
+import com.xnotes.input.UiScheduler
 import com.xnotes.core.geometry.Pt
 import com.xnotes.core.infinite.CanvasViewport
-import com.xnotes.canvas.HandleId
-import com.xnotes.canvas.ResizeMath
-import com.xnotes.canvas.SelectionMath
 import com.xnotes.core.geometry.Rect
 import com.xnotes.core.infinite.CanvasSelection
 import com.xnotes.core.infinite.EraseSession
@@ -54,6 +47,10 @@ enum class CanvasPointerMode { IDLE, PAN, PINCH, DRAW, ERASE, SHAPE, BAND, LASSO
 class InfiniteInteraction(
     private val viewport: CanvasViewport,
     private val requestRender: () -> Unit,
+    /** The UI thread's timers: long press, shape dwell and fling frames. */
+    private val scheduler: UiScheduler,
+    /** Whether the image file at a path is vector (SVG); hosts may pass a memoized check. */
+    private val isVectorFile: (String) -> Boolean = { com.xnotes.core.util.Svg.isSvgFile(java.io.File(it)) },
     /** Called whenever the view moved, so the host can refresh a zoom readout or schedule a save. */
     private val onViewChanged: () -> Unit = {},
     /** True while a gesture or a glide is live, so the renderer can keep drawing every refresh. */
@@ -102,7 +99,6 @@ class InfiniteInteraction(
     private val onToolChanged: (Tool) -> Unit = {},
 ) {
 
-    private val choreographer = Choreographer.getInstance()
 
     companion object {
         /** How near a handle a press has to land to grab it, in device pixels. */
@@ -173,7 +169,6 @@ class InfiniteInteraction(
     private var longPressPrevTool: Tool? = null
 
     // Hold-still-to-snap: a freehand stroke that stops moving becomes the shape it looks like.
-    private val handler = Handler(Looper.getMainLooper())
     private var dwellRunnable: Runnable? = null
     private var dwellEligible = false
     private var dwellAnchor = Pt.ZERO
@@ -195,21 +190,21 @@ class InfiniteInteraction(
     private var flinging = false
     private var flingVel = Pt.ZERO
     private var lastFlingMs = 0L
-    private val flingFrame = Choreographer.FrameCallback { stepFling(it) }
+    private val flingFrame = FrameCallback { stepFling(it) }
 
     // Pinch.
     private var pinchInitDist = 1.0
     private var pinchInitZoom = 1.0
     private var pinchAnchorContent = Pt.ZERO
 
-    fun onTouch(e: MotionEvent): Boolean {
+    fun onTouch(e: PointerEvent): Boolean {
         when (e.actionMasked) {
-            MotionEvent.ACTION_DOWN -> handleDown(e)
-            MotionEvent.ACTION_POINTER_DOWN -> handlePointerDown(e)
-            MotionEvent.ACTION_MOVE -> handleMove(e)
-            MotionEvent.ACTION_POINTER_UP -> handlePointerUp(e)
-            MotionEvent.ACTION_UP -> handleUp(e)
-            MotionEvent.ACTION_CANCEL -> abortGesture()
+            PointerEvent.ACTION_DOWN -> handleDown(e)
+            PointerEvent.ACTION_POINTER_DOWN -> handlePointerDown(e)
+            PointerEvent.ACTION_MOVE -> handleMove(e)
+            PointerEvent.ACTION_POINTER_UP -> handlePointerUp(e)
+            PointerEvent.ACTION_UP -> handleUp(e)
+            PointerEvent.ACTION_CANCEL -> abortGesture()
         }
         return true
     }
@@ -218,7 +213,7 @@ class InfiniteInteraction(
      * Latch a side button reported only on the hovering generic-motion stream, which is the only
      * place some pens put it.
      */
-    fun onGenericMotion(e: MotionEvent) {
+    fun onGenericMotion(e: PointerEvent) {
         stylusButtons.onGenericMotion(e)
     }
 
@@ -241,7 +236,7 @@ class InfiniteInteraction(
 
     // --- pointer handling ---
 
-    private fun handleDown(e: MotionEvent) {
+    private fun handleDown(e: PointerEvent) {
         stopFling() // a new touch halts any in-progress glide
         // The minimap sits over the canvas, so a press on it navigates rather than draws.
         if (onMinimapPress(e.getX(0).toDouble(), e.getY(0).toDouble())) {
@@ -249,7 +244,7 @@ class InfiniteInteraction(
             return
         }
         drawingPointerId = e.getPointerId(0)
-        drawingIsStylus = e.getToolType(0) == MotionEvent.TOOL_TYPE_STYLUS
+        drawingIsStylus = e.getToolType(0) == PointerEvent.TOOL_TYPE_STYLUS
         val vx = e.getX(0).toDouble()
         val vy = e.getY(0).toDouble()
 
@@ -260,16 +255,16 @@ class InfiniteInteraction(
         val buttonHeld = stylusButtons.heldFor(e)
         val onSelection = hitsSelection(viewport.viewportToContent(Pt(vx, vy)))
         val effective: Tool = when {
-            toolType == MotionEvent.TOOL_TYPE_ERASER -> Tool.ERASER
+            toolType == PointerEvent.TOOL_TYPE_ERASER -> Tool.ERASER
             buttonHeld && penButtonTool != null -> penButtonTool!!
             // While something is selected, a press on it grabs it rather than inking through it,
             // and a finger may grab it even with finger-draw off. Both are the paged canvas's
             // rules; without them a selection could only be handled by a stylus.
             onSelection && (tool.isStroke || tool == Tool.SHAPE) &&
-                toolType != MotionEvent.TOOL_TYPE_FINGER -> Tool.SELECT
-            toolType == MotionEvent.TOOL_TYPE_FINGER && !fingerDraws && tool.fingerPansWhenOff &&
+                toolType != PointerEvent.TOOL_TYPE_FINGER -> Tool.SELECT
+            toolType == PointerEvent.TOOL_TYPE_FINGER && !fingerDraws && tool.fingerPansWhenOff &&
                 onSelection -> Tool.SELECT
-            toolType == MotionEvent.TOOL_TYPE_FINGER && !fingerDraws && tool.fingerPansWhenOff -> Tool.PAN
+            toolType == PointerEvent.TOOL_TYPE_FINGER && !fingerDraws && tool.fingerPansWhenOff -> Tool.PAN
             else -> tool
         }
         // A press that lands off the selection with anything but the selection tools dismisses it,
@@ -279,7 +274,7 @@ class InfiniteInteraction(
             if (effective == Tool.PAN) panMayDismiss = hasSelection() else clearSelection()
         }
 
-        armLongPress(Pt(vx, vy), onSelection, toolType == MotionEvent.TOOL_TYPE_FINGER)
+        armLongPress(Pt(vx, vy), onSelection, toolType == PointerEvent.TOOL_TYPE_FINGER)
 
         when {
             effective.isStroke -> beginDraw(vx, vy, effective, e)
@@ -318,11 +313,11 @@ class InfiniteInteraction(
         longPressAt = at
         val r = Runnable { triggerLongPress() }
         longPressRunnable = r
-        handler.postDelayed(r, InteractionController.LONG_PRESS_MS)
+        scheduler.postDelayed(r, InteractionController.LONG_PRESS_MS)
     }
 
     private fun cancelLongPress() {
-        longPressRunnable?.let { handler.removeCallbacks(it) }
+        longPressRunnable?.let { scheduler.removeCallbacks(it) }
         longPressRunnable = null
         longPressCandidate = null
         longPressLocked = null
@@ -367,7 +362,7 @@ class InfiniteInteraction(
         onSelectionChanged()
     }
 
-    private fun handlePointerDown(e: MotionEvent) {
+    private fun handlePointerDown(e: PointerEvent) {
         cancelLongPress() // a second finger is a pinch, never a held press
         // A stylus stroke ignores an incidental palm or second finger; a finger stroke yields to a
         // pinch, since two fingers can only mean a zoom.
@@ -381,7 +376,7 @@ class InfiniteInteraction(
         }
     }
 
-    private fun handleMove(e: MotionEvent) {
+    private fun handleMove(e: PointerEvent) {
         // A finger that wanders is panning or drawing, not holding still for the menu.
         if (longPressRunnable != null) {
             val moved = Pt(e.getX(0).toDouble(), e.getY(0).toDouble()).distanceTo(longPressAt)
@@ -402,7 +397,7 @@ class InfiniteInteraction(
         }
     }
 
-    private fun handlePointerUp(e: MotionEvent) {
+    private fun handlePointerUp(e: PointerEvent) {
         if (mode != CanvasPointerMode.PINCH) return
         // Dropping to one finger continues as a pan from wherever that finger is, so a pinch that
         // relaxes into a drag does not jump.
@@ -414,7 +409,7 @@ class InfiniteInteraction(
         }
     }
 
-    private fun handleUp(e: MotionEvent) {
+    private fun handleUp(e: PointerEvent) {
         cancelLongPress()
         val wasMoving = (mode == CanvasPointerMode.PAN && singleFingerPanAllowed() && !panFromPenButton) ||
             (mode == CanvasPointerMode.PINCH && pinchPanAllowed())
@@ -472,7 +467,7 @@ class InfiniteInteraction(
 
     // --- drawing ---
 
-    private fun beginDraw(vx: Double, vy: Double, drawTool: Tool, e: MotionEvent) {
+    private fun beginDraw(vx: Double, vy: Double, drawTool: Tool, e: PointerEvent) {
         val base = configFor(drawTool)
         // SCALE off: divide the width by the draw-time zoom so the stroke keeps a constant
         // on-screen thickness whatever zoom it was drawn at. Baked in, so it is ordinary ink after.
@@ -512,7 +507,7 @@ class InfiniteInteraction(
         requestRender()
     }
 
-    private fun extendDraw(e: MotionEvent) {
+    private fun extendDraw(e: PointerEvent) {
         val idx = e.findPointerIndex(drawingPointerId)
         if (idx < 0) return
         // Historical points first: the digitizer batches several samples into one event, and
@@ -558,7 +553,7 @@ class InfiniteInteraction(
         }
     }
 
-    private fun endDraw(e: MotionEvent) {
+    private fun endDraw(e: PointerEvent) {
         cancelDwell()
         dwellEligible = false
         val idx = e.findPointerIndex(drawingPointerId).coerceAtLeast(0)
@@ -783,7 +778,7 @@ class InfiniteInteraction(
     }
 
     private fun isVectorImage(item: CanvasItem): Boolean =
-        item is ImageItem && com.xnotes.platform.ImageDecoder.isVector(item.image.file.path)
+        item is ImageItem && isVectorFile(item.image.file.path)
 
     /**
      * A resize in progress. The model is left alone and the renderer is handed the map, so a handle
@@ -920,11 +915,11 @@ class InfiniteInteraction(
         dwellAnchor = at
         val r = Runnable { onDwellElapsed() }
         dwellRunnable = r
-        handler.postDelayed(r, InteractionController.SHAPE_DWELL_MS)
+        scheduler.postDelayed(r, InteractionController.SHAPE_DWELL_MS)
     }
 
     private fun cancelDwell() {
-        dwellRunnable?.let { handler.removeCallbacks(it) }
+        dwellRunnable?.let { scheduler.removeCallbacks(it) }
         dwellRunnable = null
     }
 
@@ -990,7 +985,7 @@ class InfiniteInteraction(
         eraseAt(vx, vy)
     }
 
-    private fun extendErase(e: MotionEvent) {
+    private fun extendErase(e: PointerEvent) {
         val idx = e.findPointerIndex(drawingPointerId)
         if (idx < 0) return
         // The historical points matter here as much as when drawing: a fast sweep that only sampled
@@ -1042,7 +1037,7 @@ class InfiniteInteraction(
         stroke.trimToSize()
     }
 
-    private fun pressureOf(e: MotionEvent, index: Int): Double =
+    private fun pressureOf(e: PointerEvent, index: Int): Double =
         if (drawingIsStylus) e.getPressure(index).toDouble() else 1.0
 
     // --- pan ---
@@ -1076,7 +1071,7 @@ class InfiniteInteraction(
 
     // --- pinch ---
 
-    private fun beginPinch(e: MotionEvent) {
+    private fun beginPinch(e: PointerEvent) {
         mode = CanvasPointerMode.PINCH
         setInteractive(true, true)
         val a = Pt(e.getX(0).toDouble(), e.getY(0).toDouble())
@@ -1088,7 +1083,7 @@ class InfiniteInteraction(
         startTrackingVelocity(mid.x, mid.y)
     }
 
-    private fun updatePinch(e: MotionEvent) {
+    private fun updatePinch(e: PointerEvent) {
         if (e.pointerCount < 2) return
         val a = Pt(e.getX(0).toDouble(), e.getY(0).toDouble())
         val b = Pt(e.getX(1).toDouble(), e.getY(1).toDouble())
@@ -1133,7 +1128,7 @@ class InfiniteInteraction(
         flingVel = fingerVel
         flinging = true
         lastFlingMs = System.nanoTime() / 1_000_000L
-        choreographer.postFrameCallback(flingFrame)
+        scheduler.postFrameCallback(flingFrame)
     }
 
     fun stopFling() {
@@ -1155,7 +1150,7 @@ class InfiniteInteraction(
             flinging = false
             setInteractive(false, true)
         } else {
-            choreographer.postFrameCallback(flingFrame)
+            scheduler.postFrameCallback(flingFrame)
         }
     }
 }
