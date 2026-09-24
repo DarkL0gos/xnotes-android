@@ -1,38 +1,51 @@
 package com.xnotes.desktop
 
+import com.xnotes.core.model.Rgba
+import com.xnotes.core.tools.Tool
 import java.awt.BorderLayout
 import java.awt.CardLayout
+import java.awt.Color
 import java.awt.Dimension
 import java.awt.FlowLayout
+import java.awt.event.ActionEvent
+import java.awt.event.InputEvent
+import java.awt.event.KeyEvent
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
 import java.io.File
+import javax.swing.AbstractAction
+import javax.swing.ButtonGroup
 import javax.swing.JButton
 import javax.swing.JCheckBox
+import javax.swing.JColorChooser
+import javax.swing.JComponent
 import javax.swing.JFileChooser
 import javax.swing.JFrame
 import javax.swing.JLabel
 import javax.swing.JOptionPane
 import javax.swing.JPanel
 import javax.swing.JScrollPane
-import javax.swing.JSlider
 import javax.swing.JTextArea
+import javax.swing.JToggleButton
+import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
 import javax.swing.Timer
 import javax.swing.filechooser.FileNameExtensionFilter
 
-/** Minimal desktop host for reading and safely writing the shared file formats. */
+/** Desktop host: edits .xnote pages with the shared canvas, shows .xcanvas info, saves safely. */
 private class DesktopWindow : JFrame("xnotes") {
     private val storage = DesktopStorage()
     private val preferences = DesktopPreferences()
     private var document: OpenDocument? = null
     private val details = JTextArea()
-    private val pageView = PagedDocumentView()
-    private val pageScroll = JScrollPane(pageView)
+    private val canvas = DesktopCanvasView()
     private val cards = JPanel(CardLayout())
-    private var currentPage = 0
     private val pageLabel = JLabel("Страница 0/0")
-    private val zoomSlider = JSlider(15, 250, 65)
+    private val zoomLabel = JLabel("100%")
+    private val undoButton = JButton("↶").apply { toolTipText = "Отменить (Ctrl+Z)" }
+    private val redoButton = JButton("↷").apply { toolTipText = "Повторить (Ctrl+Shift+Z)" }
+    private val colorButton = JButton("Цвет")
+    private val toolButtons = LinkedHashMap<Tool, JToggleButton>()
     private val status = JLabel("Откройте файл .xnote или .xcanvas")
 
     /** Edits made since the last session checkpoint; the timer writes them out. */
@@ -41,37 +54,64 @@ private class DesktopWindow : JFrame("xnotes") {
 
     init {
         defaultCloseOperation = DISPOSE_ON_CLOSE
-        minimumSize = Dimension(600, 380)
-        layout = BorderLayout(12, 12)
+        minimumSize = Dimension(760, 480)
+        preferredSize = Dimension(1100, 800)
+        layout = BorderLayout(8, 8)
         details.isEditable = false
         details.lineWrap = true
         details.wrapStyleWord = true
-        zoomSlider.preferredSize = Dimension(150, 24)
-        zoomSlider.addChangeListener { pageView.setZoom(zoomSlider.value / 100.0) }
-        val actions = JPanel(FlowLayout(FlowLayout.LEADING)).apply {
+
+        val files = JPanel(FlowLayout(FlowLayout.LEADING, 4, 2)).apply {
             add(JButton("Открыть…").apply { addActionListener { chooseOpen() } })
             add(JButton("Сохранить").apply { addActionListener { save(false) } })
             add(JButton("Сохранить как…").apply { addActionListener { save(true) } })
+            add(undoButton.apply { addActionListener { canvas.undo() } })
+            add(redoButton.apply { addActionListener { canvas.redo() } })
             add(JButton("←").apply { addActionListener { navigate(-1) } })
             add(pageLabel)
             add(JButton("→").apply { addActionListener { navigate(1) } })
-            add(JLabel("Масштаб"))
-            add(zoomSlider)
+            add(JButton("−").apply { addActionListener { canvas.zoomStep(false) } })
+            add(zoomLabel)
+            add(JButton("+").apply { addActionListener { canvas.zoomStep(true) } })
+            add(JButton("По ширине").apply { addActionListener { canvas.fitWidth() } })
             add(JCheckBox("Тёмная бумага", true).apply {
-                addActionListener { pageView.setDarkPaper(isSelected) }
+                addActionListener { canvas.setDarkPaper(isSelected) }
             })
         }
-        add(actions, BorderLayout.NORTH)
+        val tools = JPanel(FlowLayout(FlowLayout.LEADING, 4, 2)).apply {
+            val group = ButtonGroup()
+            for ((tool, label) in TOOLS) {
+                val button = JToggleButton(label).apply { addActionListener { selectTool(tool) } }
+                group.add(button)
+                toolButtons[tool] = button
+                add(button)
+            }
+            add(colorButton.apply { addActionListener { chooseColor() } })
+        }
+        add(JPanel(BorderLayout()).apply {
+            add(files, BorderLayout.NORTH)
+            add(tools, BorderLayout.SOUTH)
+        }, BorderLayout.NORTH)
         cards.add(JScrollPane(details), "details")
-        cards.add(pageScroll, "pages")
+        cards.add(canvas, "pages")
         add(cards, BorderLayout.CENTER)
         add(status, BorderLayout.SOUTH)
+
+        canvas.onEdited = { documentEdited() }
+        canvas.onViewChanged = { updateViewReadouts() }
+        canvas.onHistoryChanged = { updateHistoryButtons() }
+        selectTool(Tool.PEN)
+        updateColorButton()
+        updateHistoryButtons()
+        installShortcuts()
+
         addWindowListener(object : WindowAdapter() {
             // Unsaved edits are kept as the session rather than asked about: the next launch
             // restores them, just as it would after a crash.
             override fun windowClosing(event: WindowEvent) = flushSession()
             override fun windowClosed(event: WindowEvent) {
                 sessionTimer.stop()
+                canvas.dispose()
                 storage.close()
             }
         })
@@ -100,7 +140,7 @@ private class DesktopWindow : JFrame("xnotes") {
             }
         }
         show(restored.document)
-        restoreView(restored.view)
+        if (restored.document is OpenDocument.Note) canvas.restoreView(restored.view)
         status.text = "Восстановлены несохранённые изменения: ${restored.document.file?.absolutePath ?: restored.document.title}"
     }
 
@@ -120,36 +160,31 @@ private class DesktopWindow : JFrame("xnotes") {
     private fun show(opened: OpenDocument) {
         document = opened
         sessionPending = false
-        if (opened is OpenDocument.Note) {
-            pageView.show(opened.value)
-            currentPage = 0
-            updatePageLabel()
-            (cards.layout as CardLayout).show(cards, "pages")
-            pageScroll.viewport.viewPosition = java.awt.Point(0, 0)
-        } else {
-            pageView.show(null)
-            updatePageLabel()
-            (cards.layout as CardLayout).show(cards, "details")
-        }
-        details.text = when (opened) {
-            is OpenDocument.Note -> buildString {
-                appendLine("Заметка: ${opened.title}")
-                appendLine("Страниц: ${opened.value.pages.size}")
-                appendLine("Элементов: ${opened.value.pages.sumOf { it.items.size }}")
-                appendLine("Исходный PDF: ${if (opened.value.hasPdf) "встроен" else "нет"}")
+        when (opened) {
+            is OpenDocument.Note -> {
+                canvas.show(opened.value)
+                (cards.layout as CardLayout).show(cards, "pages")
+                canvas.requestFocusInWindow()
             }
-            is OpenDocument.Canvas -> buildString {
-                appendLine("Холст: ${opened.title}")
-                appendLine("Элементов: ${opened.value.itemCount}")
-                appendLine("Закладок: ${opened.value.waypoints.size}")
+            is OpenDocument.Canvas -> {
+                details.text = buildString {
+                    appendLine("Холст: ${opened.title}")
+                    appendLine("Элементов: ${opened.value.itemCount}")
+                    appendLine("Закладок: ${opened.value.waypoints.size}")
+                    appendLine()
+                    appendLine("Бесконечный холст на Linux пока только просматривается как сводка.")
+                }
+                (cards.layout as CardLayout).show(cards, "details")
             }
         }
+        updateViewReadouts()
+        updateHistoryButtons()
         updateTitle()
     }
 
     /**
      * The hook every document edit goes through: marks the document unsaved and schedules a
-     * session checkpoint. (The viewer has no editing tools yet; the editor will call this.)
+     * session checkpoint.
      */
     fun documentEdited() {
         when (val d = document ?: return) {
@@ -158,6 +193,61 @@ private class DesktopWindow : JFrame("xnotes") {
         }
         sessionPending = true
         updateTitle()
+    }
+
+    private fun selectTool(tool: Tool) {
+        canvas.setTool(tool)
+        toolButtons[tool]?.isSelected = true
+    }
+
+    private fun chooseColor() {
+        val current = canvas.inkColor
+        val picked = JColorChooser.showDialog(this, "Цвет чернил", Color(current.r, current.g, current.b)) ?: return
+        canvas.inkColor = Rgba(picked.red, picked.green, picked.blue, 255)
+        updateColorButton()
+    }
+
+    private fun updateColorButton() {
+        val c = canvas.inkColor
+        colorButton.foreground = Color(c.r, c.g, c.b)
+        colorButton.text = "● Цвет"
+    }
+
+    private fun updateHistoryButtons() {
+        val editing = document is OpenDocument.Note
+        undoButton.isEnabled = editing && canvas.canUndo
+        redoButton.isEnabled = editing && canvas.canRedo
+    }
+
+    private fun updateViewReadouts() {
+        val note = document is OpenDocument.Note
+        pageLabel.text = if (!note || canvas.pageCount == 0) "Страница 0/0"
+            else "Страница ${canvas.currentPage() + 1}/${canvas.pageCount}"
+        zoomLabel.text = if (note) "${canvas.zoomPercent}%" else "—"
+    }
+
+    private fun installShortcuts() {
+        val menu = java.awt.Toolkit.getDefaultToolkit().menuShortcutKeyMaskEx
+        fun bind(name: String, stroke: KeyStroke, action: () -> Unit) {
+            rootPane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(stroke, name)
+            rootPane.actionMap.put(name, object : AbstractAction() {
+                override fun actionPerformed(e: ActionEvent) {
+                    if (document is OpenDocument.Note) action()
+                }
+            })
+        }
+        bind("undo", KeyStroke.getKeyStroke(KeyEvent.VK_Z, menu)) { canvas.undo() }
+        bind("redo", KeyStroke.getKeyStroke(KeyEvent.VK_Z, menu or InputEvent.SHIFT_DOWN_MASK)) { canvas.redo() }
+        bind("redo-y", KeyStroke.getKeyStroke(KeyEvent.VK_Y, menu)) { canvas.redo() }
+        bind("save", KeyStroke.getKeyStroke(KeyEvent.VK_S, menu)) { save(false) }
+        bind("select-all", KeyStroke.getKeyStroke(KeyEvent.VK_A, menu)) { selectTool(Tool.LASSO); canvas.selectAll() }
+        bind("delete", KeyStroke.getKeyStroke(KeyEvent.VK_DELETE, 0)) { canvas.deleteSelection() }
+        bind("escape", KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0)) { canvas.escape() }
+        bind("zoom-in", KeyStroke.getKeyStroke(KeyEvent.VK_EQUALS, menu)) { canvas.zoomStep(true) }
+        bind("zoom-out", KeyStroke.getKeyStroke(KeyEvent.VK_MINUS, menu)) { canvas.zoomStep(false) }
+        for ((index, entry) in TOOLS.withIndex()) {
+            bind("tool-${entry.first.id}", KeyStroke.getKeyStroke(KeyEvent.VK_1 + index, 0)) { selectTool(entry.first) }
+        }
     }
 
     private fun checkpointSession() {
@@ -178,19 +268,8 @@ private class DesktopWindow : JFrame("xnotes") {
         runCatching { storage.saveSession(d, currentView()) }
     }
 
-    private fun currentView(): Map<String, Double> = mapOf(
-        VIEW_ZOOM to pageView.zoom,
-        VIEW_SCROLL_X to pageScroll.viewport.viewPosition.x.toDouble(),
-        VIEW_SCROLL_Y to pageScroll.viewport.viewPosition.y.toDouble(),
-    )
-
-    private fun restoreView(view: Map<String, Double>) {
-        view[VIEW_ZOOM]?.let { zoomSlider.value = (it * 100).toInt() }
-        val x = view[VIEW_SCROLL_X]?.toInt() ?: 0
-        val y = view[VIEW_SCROLL_Y]?.toInt() ?: 0
-        // After the zoom's relayout, so the position lands in the resized view.
-        SwingUtilities.invokeLater { pageScroll.viewport.viewPosition = java.awt.Point(x, y) }
-    }
+    private fun currentView(): Map<String, Double> =
+        if (document is OpenDocument.Note) canvas.viewState() else emptyMap()
 
     private fun updateTitle() {
         val d = document ?: return
@@ -206,15 +285,8 @@ private class DesktopWindow : JFrame("xnotes") {
     }
 
     private fun navigate(delta: Int) {
-        if (document !is OpenDocument.Note || pageView.pageCount() == 0) return
-        currentPage = (currentPage + delta).coerceIn(0, pageView.pageCount() - 1)
-        updatePageLabel()
-        pageScroll.viewport.viewPosition = java.awt.Point(0, pageView.pageTop(currentPage))
-    }
-
-    private fun updatePageLabel() {
-        pageLabel.text = if (pageView.pageCount() == 0) "Страница 0/0"
-            else "Страница ${currentPage + 1}/${pageView.pageCount()}"
+        if (document !is OpenDocument.Note || canvas.pageCount == 0) return
+        canvas.goToPage((canvas.currentPage() + delta).coerceIn(0, canvas.pageCount - 1))
     }
 
     private fun chooseOpen() {
@@ -265,9 +337,15 @@ private class DesktopWindow : JFrame("xnotes") {
 
     private companion object {
         const val SESSION_CHECKPOINT_MS = 3000
-        const val VIEW_ZOOM = "zoom"
-        const val VIEW_SCROLL_X = "scrollX"
-        const val VIEW_SCROLL_Y = "scrollY"
+
+        /** The toolbar's tools, in order; keys 1..N select them. */
+        val TOOLS = listOf(
+            Tool.PAN to "Рука",
+            Tool.PEN to "Перо",
+            Tool.HIGHLIGHTER to "Маркер",
+            Tool.ERASER to "Ластик",
+            Tool.LASSO to "Лассо",
+        )
     }
 }
 

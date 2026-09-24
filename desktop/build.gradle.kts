@@ -27,3 +27,8 @@ tasks.processResources {
 application {
     mainClass.set("com.xnotes.desktop.MainKt")
 }
+
+tasks.test {
+    // Canvas tests drive Swing components without a display.
+    systemProperty("java.awt.headless", "true")
+}
