@@ -160,7 +160,7 @@ class SpatialIndex(val cellSize: Double = DEFAULT_CELL_SIZE) {
 }
 
 /** True when every edge is finite, so the rect can be turned into a cell span. */
-internal fun Rect.isFinite(): Boolean =
+fun Rect.isFinite(): Boolean =
     x.isFinite() && y.isFinite() && w.isFinite() && h.isFinite()
 
 internal fun <T> MutableList<T>.removeRef(target: T): Boolean {

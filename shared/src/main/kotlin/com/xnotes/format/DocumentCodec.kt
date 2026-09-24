@@ -168,7 +168,7 @@ class DocumentCodec(
      * because [ZipTail] rewrites exactly this part of an existing bundle in place, and the two must
      * produce the same thing.
      */
-    internal fun writeTail(
+    fun writeTail(
         zos: ZipOutputStream,
         doc: Document,
         assets: List<Pair<String, File>>,
@@ -196,7 +196,7 @@ class DocumentCodec(
      * manifest walks the same pages and items and takes the names from this list positionally, so
      * there is one naming walk rather than two that could drift apart.
      */
-    internal fun imageAssets(doc: Document): List<Pair<String, File>> {
+    fun imageAssets(doc: Document): List<Pair<String, File>> {
         val out = ArrayList<Pair<String, File>>()
         for (page in doc.pages) {
             for (item in page.items) {
