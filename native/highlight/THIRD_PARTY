@@ -3,7 +3,7 @@ Vendored native sources (no build-time downloads; see each dir's LICENSE).
 tree-sitter/      https://github.com/tree-sitter/tree-sitter
                   tag v0.25.6, commit bf655c0beaf4943573543fa77c58e8006ff34971 (MIT)
 
-Each grammar's queries/highlights.scm ships as assets/scm/<lang>.scm.
+Each grammar's queries/highlights.scm ships as app/src/main/assets/scm/<lang>.scm.
 
 grammars/json/        https://github.com/tree-sitter/tree-sitter-json        tag v0.24.8 (MIT)
 grammars/c/           https://github.com/tree-sitter/tree-sitter-c           tag v0.23.4 (MIT)

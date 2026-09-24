@@ -97,3 +97,12 @@ stored under `$XDG_CONFIG_HOME/xnotes` (or `~/.config/xnotes`), and extracted
 document assets are kept under `$XDG_CACHE_HOME/xnotes` (or `~/.cache/xnotes`)
 while a file is open. The application does not modify the original bundle until
 Save is chosen.
+
+The only native code, tree-sitter code highlighting, lives in `native/highlight` as a
+plain C library (`xn_highlight.h`) shared by the Android JNI bridge and future desktop
+hosts. Build and test it standalone:
+
+```bash
+cmake -S native/highlight -B build/native-highlight
+cmake --build build/native-highlight -j && ctest --test-dir build/native-highlight
+```
