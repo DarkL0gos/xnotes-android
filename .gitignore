@@ -1,9 +1,11 @@
 # --- Planning / spec / AI artifacts (never commit) ---
 CLAUDE.md
 .claude/
+docs/
 
-# --- Gradle ---
+# --- Gradle / Kotlin ---
 .gradle/
+.kotlin/
 build/
 **/build/
 
@@ -12,6 +14,7 @@ build/
 *.iml
 *.iws
 *.ipr
+.vscode/
 captures/
 .cxx/
 output.json
@@ -25,3 +28,7 @@ keystore.properties
 # --- Misc ---
 .DS_Store
 *.log
+
+# --- Profiling dumps (JFR recordings, heap dumps) ---
+*.jfr
+*.hprof
