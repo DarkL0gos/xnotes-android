@@ -12,7 +12,6 @@ import com.xnotes.core.pal.SurfaceFactory
 import com.xnotes.core.stroke.Sample
 import com.xnotes.core.tools.Tool
 import com.xnotes.core.tools.ToolDefaults
-import com.xnotes.ui.theme.Palette
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -47,7 +46,7 @@ class SharpViewportEditReplayTest {
 
     private fun state(page: Page): CanvasState {
         val doc = Document(mutableListOf(page))
-        return CanvasState(doc, factory, Palette.forAppearance("dark", Rgba(0, 230, 118))).apply {
+        return CanvasState(doc, factory, TestPalette()).apply {
             viewportW = 800
             viewportH = 1000
             maxCachePx = 100.0 // a 200px page is past the cap already at zoom 1

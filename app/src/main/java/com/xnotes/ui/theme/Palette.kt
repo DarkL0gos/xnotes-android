@@ -1,5 +1,6 @@
 package com.xnotes.ui.theme
 
+import com.xnotes.canvas.CanvasPalette
 import com.xnotes.core.model.Rgba
 import kotlin.math.abs
 
@@ -8,15 +9,15 @@ import kotlin.math.abs
  * palette's shipped accent and survives a dark/light switch.
  */
 data class Palette(
-    val bg: Rgba,
+    override val bg: Rgba,
     val panel: Rgba,
-    val paper: Rgba,
-    val paperBorder: Rgba,
-    val accent: Rgba,
+    override val paper: Rgba,
+    override val paperBorder: Rgba,
+    override val accent: Rgba,
     val accentDim: Rgba,
     val border: Rgba,
     val text: Rgba,
-    val textDim: Rgba,
+    override val textDim: Rgba,
     val surface: Rgba,
     val surfaceHi: Rgba,
     val menuBg: Rgba,
@@ -24,7 +25,7 @@ data class Palette(
     /** True when the chrome is built from a Material 3 scheme (rounded card corners etc.). */
     val isMaterial: Boolean = false,
     val materialColors: MaterialColors? = null,
-) {
+) : CanvasPalette {
     /** The accent lightened ~28% (hover highlights). */
     val accentLight: Rgba get() = ColorMath.lighten(accent, 0.28)
 

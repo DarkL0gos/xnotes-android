@@ -10,7 +10,6 @@ import com.xnotes.core.model.Stroke
 import com.xnotes.core.stroke.Sample
 import com.xnotes.core.tools.Tool
 import com.xnotes.core.tools.ToolDefaults
-import com.xnotes.ui.theme.Palette
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertSame
@@ -38,7 +37,7 @@ class UndoCacheRepairTest {
         val page = Page(200.0, 200.0, mutableListOf(dot(20.0, 20.0), dot(120.0, 120.0)))
         if (background) page.pdfPage = 0 // a real PDF-backed page, so a background cache is built and kept
         val doc = Document(mutableListOf(page))
-        return CanvasState(doc, FakeSurfaceFactory(), Palette.forAppearance("dark", Rgba(0, 230, 118))).apply {
+        return CanvasState(doc, FakeSurfaceFactory(), TestPalette()).apply {
             viewportW = 800
             viewportH = 1000
             relayout()

@@ -113,6 +113,8 @@ class InteractionController(
     val history: History,
     private val textMeasurer: TextMeasurer,
     private val requestRender: () -> Unit,
+    /** The full UI theme the ruler chrome is painted with ([CanvasState.palette] carries only the canvas colours). */
+    private val chromePalette: () -> Palette = { Palette.dark() },
     private val onContentChanged: () -> Unit = {},
     private val onViewChanged: () -> Unit = {},
     /** A pinch just snapped the view to fit-to-width (newly): surface the lock hint. */
@@ -3035,7 +3037,7 @@ class InteractionController(
 
     /** Paint the ruler in viewport space: an infinite frosted band, dual-edge graduations and readouts. */
     private fun drawRuler(r: Renderer) {
-        val pal = state.palette
+        val pal = chromePalette()
         val density = state.devicePxPerDp
         // Visible along-range: project the four viewport corners onto the band's length axis.
         val d = ruler.direction()

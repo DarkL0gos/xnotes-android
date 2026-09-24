@@ -372,7 +372,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
 
     var tool by mutableStateOf(Tool.DEFAULT)
         private set
-    var palette by mutableStateOf(state.palette)
+    var palette by mutableStateOf(buildPalette(settings.prefs))
         private set
     var zoomPercent by mutableStateOf(100)
         private set
@@ -760,6 +760,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         history,
         textMeasurer,
         requestRender = { onRender() },
+        chromePalette = { palette },
         onContentChanged = { refreshContent() },
         onViewChanged = { refreshView() },
         onFitWidthSnapped = { showZoomLockHint() },

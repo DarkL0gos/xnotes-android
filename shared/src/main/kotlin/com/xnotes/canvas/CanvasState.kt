@@ -21,7 +21,6 @@ import com.xnotes.core.pal.Renderer
 import com.xnotes.core.pal.SurfaceFactory
 import com.xnotes.core.stroke.StrokeGeometry
 import com.xnotes.core.tools.Tool
-import com.xnotes.ui.theme.Palette
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
@@ -33,7 +32,7 @@ import kotlin.math.min
  * transparent ink cache that sits above the background — see [CanvasView]. All other
  * ink is cached.
  */
-internal fun CanvasItem.isHighlighterInk(): Boolean = this is Stroke && this.tool == Tool.HIGHLIGHTER
+fun CanvasItem.isHighlighterInk(): Boolean = this is Stroke && this.tool == Tool.HIGHLIGHTER
 
 /**
  * A rasterized page cache plus the resolution it was built at and the page-space rect it covers
@@ -76,7 +75,7 @@ sealed class InitialView {
 class CanvasState(
     var document: Document,
     private val surfaceFactory: SurfaceFactory,
-    var palette: Palette,
+    var palette: CanvasPalette,
 ) {
     var zoom: Double = 1.0
     var scrollX: Double = 0.0
