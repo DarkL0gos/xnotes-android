@@ -11,7 +11,7 @@ import com.xnotes.core.pal.FontSpec
  */
 object AndroidText {
     /** points -> page pixels at 150 DPI (1pt = 1/72 inch). */
-    const val POINTS_TO_PX = 150f / 72f
+    const val POINTS_TO_PX = com.xnotes.core.pal.TextUnits.POINTS_TO_PX
 
     fun textPaint(font: FontSpec, argb: Int = 0xFF000000.toInt()): TextPaint =
         TextPaint(TextPaint.ANTI_ALIAS_FLAG).apply {

@@ -1,10 +1,9 @@
 package com.xnotes.canvas
 
-import android.os.Handler
-import android.os.Looper
-import android.view.Choreographer
-import android.view.KeyEvent
-import android.view.MotionEvent
+import com.xnotes.input.FrameCallback
+import com.xnotes.input.KeyCodes
+import com.xnotes.input.PointerEvent
+import com.xnotes.input.UiScheduler
 import com.xnotes.core.geometry.Affine
 import com.xnotes.core.geometry.Geometry
 import com.xnotes.core.geometry.Obb
@@ -59,7 +58,6 @@ import com.xnotes.core.tools.ShapeKind
 import com.xnotes.core.tools.Tool
 import com.xnotes.core.tools.ToolConfig
 import com.xnotes.core.tools.ToolDefaults
-import com.xnotes.ui.theme.Palette
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -113,8 +111,10 @@ class InteractionController(
     val history: History,
     private val textMeasurer: TextMeasurer,
     private val requestRender: () -> Unit,
+    /** The UI thread's timers: long press, shape dwell, fling and fade frames. */
+    private val scheduler: UiScheduler,
     /** The full UI theme the ruler chrome is painted with ([CanvasState.palette] carries only the canvas colours). */
-    private val chromePalette: () -> Palette = { Palette.dark() },
+    private val chromePalette: () -> ChromePalette = { ChromePalette.DARK },
     private val onContentChanged: () -> Unit = {},
     private val onViewChanged: () -> Unit = {},
     /** A pinch just snapped the view to fit-to-width (newly): surface the lock hint. */
@@ -235,20 +235,17 @@ class InteractionController(
     private var panFromPenButton = false // a side-button pan parks where the pen lifted: no glide
     private var downStoppedFling = false // this touch landed on a moving glide, so its lift isn't a dismiss tap
     private var panMayCommitText = false // pan begun off an open text box: a tap commits it, a drag scrolls
-    // Framework singletons, created lazily on first use (always a gesture on the main thread) so
-    // the controller's selection/edit logic stays constructible — and unit-testable — off-device.
-    private val choreographer by lazy { Choreographer.getInstance() }
     private var flinging = false
     private var flingVel = Pt.ZERO // scroll-space velocity, viewport px/s
     private var lastFlingMs = 0L
-    private val flingFrame = Choreographer.FrameCallback { frameTimeNanos -> stepFling(frameTimeNanos) }
+    private val flingFrame = FrameCallback { frameTimeNanos -> stepFling(frameTimeNanos) }
 
     // ELASTIC OVERSCROLL (pull past the bottom end to add a page)
     /** True once the live stretch has crossed the add-page threshold, so the haptic fires once. */
     private var overscrollArmed = false
     private var overscrollSettling = false
     private var lastOverscrollMs = 0L
-    private val overscrollFrame = Choreographer.FrameCallback { frameTimeNanos -> stepOverscrollSettle(frameTimeNanos) }
+    private val overscrollFrame = FrameCallback { frameTimeNanos -> stepOverscrollSettle(frameTimeNanos) }
 
     // PINCH
     private var pinchInitDist = 1.0
@@ -276,7 +273,7 @@ class InteractionController(
     private var fadeAlpha = 1.0                       // shared multiplier, 1 = solid, 0 = gone
     private var fading = false                        // true while the fade loop runs
     private var fadeStartMs = 0L
-    private val fadeFrame = Choreographer.FrameCallback { t -> stepFade(t) }
+    private val fadeFrame = FrameCallback { t -> stepFade(t) }
     private var fadeTimerRunnable: Runnable? = null
 
     private class FadingStroke(val stroke: Stroke, val pageIndex: Int)
@@ -344,7 +341,6 @@ class InteractionController(
     private var txStartAngle = 0.0
 
     // LONG-PRESS GRAB
-    private val handler by lazy { Handler(Looper.getMainLooper()) } // lazy: see [choreographer]
     private var longPressRunnable: Runnable? = null
     private var longPressStart = Pt.ZERO
     private var longPressContent = Pt.ZERO
@@ -372,7 +368,7 @@ class InteractionController(
     private var textDragPageIndex = -1
 
     /** Front-buffered wet ink, installed by the host when the device can do it. */
-    var frontInk: FrontInk? = null
+    var frontInk: FrontInkSink? = null
 
     init {
         state.isLiftedItem = { item ->
@@ -431,14 +427,14 @@ class InteractionController(
 
     // --- touch entry point ---
 
-    fun onTouch(e: MotionEvent): Boolean {
+    fun onTouch(e: PointerEvent): Boolean {
         when (e.actionMasked) {
-            MotionEvent.ACTION_DOWN -> handleDown(e)
-            MotionEvent.ACTION_POINTER_DOWN -> handlePointerDown(e)
-            MotionEvent.ACTION_MOVE -> handleMove(e)
-            MotionEvent.ACTION_POINTER_UP -> handlePointerUp(e)
-            MotionEvent.ACTION_UP -> handleUp(e)
-            MotionEvent.ACTION_CANCEL -> {
+            PointerEvent.ACTION_DOWN -> handleDown(e)
+            PointerEvent.ACTION_POINTER_DOWN -> handlePointerDown(e)
+            PointerEvent.ACTION_MOVE -> handleMove(e)
+            PointerEvent.ACTION_POINTER_UP -> handlePointerUp(e)
+            PointerEvent.ACTION_UP -> handleUp(e)
+            PointerEvent.ACTION_CANCEL -> {
                 abortGesture()
                 requestRender()
             }
@@ -446,11 +442,11 @@ class InteractionController(
         return true
     }
 
-    fun onHover(e: MotionEvent): Boolean {
+    fun onHover(e: PointerEvent): Boolean {
         if (handleHoverAction(e)) return true
-        val isEraserPointer = e.getToolType(0) == MotionEvent.TOOL_TYPE_ERASER
+        val isEraserPointer = e.getToolType(0) == PointerEvent.TOOL_TYPE_ERASER
         if (tool != Tool.ERASER && !isEraserPointer) return false
-        eraserCursor = if (e.actionMasked == MotionEvent.ACTION_HOVER_EXIT) {
+        eraserCursor = if (e.actionMasked == PointerEvent.ACTION_HOVER_EXIT) {
             null
         } else {
             Pt(e.x.toDouble(), e.y.toDouble())
@@ -461,9 +457,9 @@ class InteractionController(
 
     /** Drive the side-button tool (eraser/pan) off the hover stream while the button is held and
      *  "activate during hover" is on, so the pen erases or pans without touching the screen. */
-    private fun handleHoverAction(e: MotionEvent): Boolean {
-        val buttonNow = e.getToolType(0) == MotionEvent.TOOL_TYPE_STYLUS &&
-            e.actionMasked != MotionEvent.ACTION_HOVER_EXIT &&
+    private fun handleHoverAction(e: PointerEvent): Boolean {
+        val buttonNow = e.getToolType(0) == PointerEvent.TOOL_TYPE_STYLUS &&
+            e.actionMasked != PointerEvent.ACTION_HOVER_EXIT &&
             ((e.buttonState and STYLUS_BUTTON_MASK) != 0 || stylusButtonHeld)
         val want = penButtonHover && buttonNow &&
             (penButtonTool == Tool.ERASER || penButtonTool == Tool.PAN)
@@ -509,22 +505,22 @@ class InteractionController(
     /** Some pens report the side button only on the hovering generic-motion stream
      *  (ACTION_BUTTON_PRESS/RELEASE), never in the touch buttonState. Latch it here; a release
      *  here also ends an in-progress hover gesture even if the pen has not moved. */
-    fun onGenericMotion(e: MotionEvent) {
-        if (e.getToolType(0) == MotionEvent.TOOL_TYPE_STYLUS) {
+    fun onGenericMotion(e: PointerEvent) {
+        if (e.getToolType(0) == PointerEvent.TOOL_TYPE_STYLUS) {
             stylusButtonHeld = (e.buttonState and STYLUS_BUTTON_MASK) != 0
             if (!stylusButtonHeld && hoverActionTool != null) endHoverAction()
         }
     }
 
     /** Feeder C: Bluetooth/USI pens often deliver the side button only as a KeyEvent, never in any
-     *  MotionEvent buttonState. Latch those into the same held flag ([down] true on key-down); a
+     *  PointerEvent buttonState. Latch those into the same held flag ([down] true on key-down); a
      *  key-up also ends a live hover gesture. Returns true if the key was a stylus side button, so
      *  the host consumes it. */
     fun onStylusButtonKey(keyCode: Int, down: Boolean): Boolean {
-        if (keyCode != KeyEvent.KEYCODE_STYLUS_BUTTON_PRIMARY &&
-            keyCode != KeyEvent.KEYCODE_STYLUS_BUTTON_SECONDARY &&
-            keyCode != KeyEvent.KEYCODE_STYLUS_BUTTON_TERTIARY &&
-            keyCode != KeyEvent.KEYCODE_STYLUS_BUTTON_TAIL &&
+        if (keyCode != KeyCodes.KEYCODE_STYLUS_BUTTON_PRIMARY &&
+            keyCode != KeyCodes.KEYCODE_STYLUS_BUTTON_SECONDARY &&
+            keyCode != KeyCodes.KEYCODE_STYLUS_BUTTON_TERTIARY &&
+            keyCode != KeyCodes.KEYCODE_STYLUS_BUTTON_TAIL &&
             keyCode != VENDOR_HELD_BUTTON_KEYCODE
         ) {
             return false
@@ -534,7 +530,7 @@ class InteractionController(
         return true
     }
 
-    private fun handleDown(e: MotionEvent) {
+    private fun handleDown(e: PointerEvent) {
         if (hoverActionTool != null) endHoverAction() // a hovering side-button gesture yields to contact
         downStoppedFling = flinging // captured before stopping: a tap that only halts a glide must not dismiss
         stopFling() // a new touch halts any in-progress glide
@@ -545,7 +541,7 @@ class InteractionController(
         val vy = e.getY(0).toDouble()
         val content = state.viewportToContent(Pt(vx, vy))
         drawingPointerId = e.getPointerId(0)
-        drawingIsStylus = toolType == MotionEvent.TOOL_TYPE_STYLUS
+        drawingIsStylus = toolType == PointerEvent.TOOL_TYPE_STYLUS
 
         // Resolve which tool this pointer drives:
         //  - the stylus eraser end, or the held side button, force the eraser/side-button tool;
@@ -554,7 +550,7 @@ class InteractionController(
         val buttonHeld = drawingIsStylus &&
             ((e.buttonState and STYLUS_BUTTON_MASK) != 0 || stylusButtonHeld)
         val effectiveTool: Tool = when {
-            toolType == MotionEvent.TOOL_TYPE_ERASER -> Tool.ERASER
+            toolType == PointerEvent.TOOL_TYPE_ERASER -> Tool.ERASER
             buttonHeld && penButtonTool != null -> penButtonTool!!
             // While something is selected, the stylus grabs that selection (resize on a handle,
             // move on the body) instead of inking through it, matching the finger. Off the
@@ -563,10 +559,10 @@ class InteractionController(
                 fingerHitsSelection(content) -> Tool.SELECT
             // A finger may grab/resize the ACTIVE selection even when finger-draw is off;
             // off the selection it still pans.
-            toolType == MotionEvent.TOOL_TYPE_FINGER && !fingerDraws && tool.fingerPansWhenOff &&
+            toolType == PointerEvent.TOOL_TYPE_FINGER && !fingerDraws && tool.fingerPansWhenOff &&
                 fingerHitsSelection(content) -> Tool.SELECT
             // A finger otherwise pans instead of drawing/selecting/shaping/erasing (text stays usable by finger).
-            toolType == MotionEvent.TOOL_TYPE_FINGER && !fingerDraws && tool.fingerPansWhenOff -> Tool.PAN
+            toolType == PointerEvent.TOOL_TYPE_FINGER && !fingerDraws && tool.fingerPansWhenOff -> Tool.PAN
             else -> tool
         }
 
@@ -575,7 +571,7 @@ class InteractionController(
         // branch). A stylus / side-button / eraser press commits now and proceeds as usual. A Text
         // press never spawns a new box on the same gesture (that double-create was a bug).
         if (editingText != null) {
-            if (toolType == MotionEvent.TOOL_TYPE_FINGER && effectiveTool == Tool.TEXT_BOX) {
+            if (toolType == PointerEvent.TOOL_TYPE_FINGER && effectiveTool == Tool.TEXT_BOX) {
                 panMayCommitText = true
                 beginPan(vx, vy)
                 return
@@ -614,7 +610,7 @@ class InteractionController(
             // for the STYLUS — so a pen drawing right along the edge never accidentally grabs the ruler.
             val band = RULER_SNAP_DP * state.devicePxPerDp
             val moveHalf =
-                if (toolType == MotionEvent.TOOL_TYPE_STYLUS) (ruler.thicknessPx / 2.0 - band).coerceAtLeast(0.0)
+                if (toolType == PointerEvent.TOOL_TYPE_STYLUS) (ruler.thicknessPx / 2.0 - band).coerceAtLeast(0.0)
                 else ruler.thicknessPx / 2.0
             if (abs(ruler.signedAcross(v)) <= moveHalf) {
                 if (ruler.lockPosition) {
@@ -639,7 +635,7 @@ class InteractionController(
             effectiveTool.isStroke -> beginDraw(content, resolvePressure(e, 0, toolType), effectiveTool, e.eventTime, Pt(vx, vy))
             effectiveTool == Tool.ERASER -> {
                 clearSelection()
-                erasingWithFinger = toolType == MotionEvent.TOOL_TYPE_FINGER
+                erasingWithFinger = toolType == PointerEvent.TOOL_TYPE_FINGER
                 beginErase(vx, vy)
             }
             effectiveTool == Tool.SELECT -> beginSelect(content)
@@ -653,11 +649,11 @@ class InteractionController(
         // The flow caret owns its own long press (word selection), and mid text-drag it is
         // suppressed so a hold-then-drag still sizes a box.
         if (mode != PointerMode.FLOW_TEXT && mode != PointerMode.TEXT_DRAG) {
-            armLongPress(Pt(vx, vy), content, toolType == MotionEvent.TOOL_TYPE_FINGER)
+            armLongPress(Pt(vx, vy), content, toolType == PointerEvent.TOOL_TYPE_FINGER)
         }
     }
 
-    private fun handlePointerDown(e: MotionEvent) {
+    private fun handlePointerDown(e: PointerEvent) {
         cancelLongPress()
         // A second finger on a ruler being moved twists/translates it instead of pinch-zooming.
         if (mode == PointerMode.RULER_MOVE && e.pointerCount >= 2) {
@@ -676,7 +672,7 @@ class InteractionController(
         if (e.pointerCount >= 2) beginPinch(e)
     }
 
-    private fun handleMove(e: MotionEvent) {
+    private fun handleMove(e: PointerEvent) {
         val idx = e.findPointerIndex(drawingPointerId).coerceAtLeast(0)
         val vx = e.getX(idx).toDouble()
         val vy = e.getY(idx).toDouble()
@@ -706,7 +702,7 @@ class InteractionController(
         }
     }
 
-    private fun handlePointerUp(e: MotionEvent) {
+    private fun handlePointerUp(e: PointerEvent) {
         if (mode == PointerMode.RULER_TRANSFORM) {
             // One finger lifted: fall back to a single-finger move with whichever finger remains.
             val up = e.actionIndex
@@ -724,7 +720,7 @@ class InteractionController(
         if (mode == PointerMode.PINCH && e.pointerCount <= 2) endPinch()
     }
 
-    private fun handleUp(e: MotionEvent) {
+    private fun handleUp(e: PointerEvent) {
         cancelLongPress()
         val idx = e.findPointerIndex(drawingPointerId).coerceAtLeast(0)
         val content = state.viewportToContent(Pt(e.getX(idx).toDouble(), e.getY(idx).toDouble()))
@@ -853,7 +849,7 @@ class InteractionController(
         requestRender()
     }
 
-    private fun extendDraw(e: MotionEvent) {
+    private fun extendDraw(e: PointerEvent) {
         val idx = e.findPointerIndex(drawingPointerId)
         if (idx < 0) return
         for (h in 0 until e.historySize) {
@@ -992,7 +988,7 @@ class InteractionController(
         return AddItem(page, stroke)
     }
 
-    private fun endDraw(e: MotionEvent) {
+    private fun endDraw(e: PointerEvent) {
         // Drop the dwell timer before the final sample so the lift can't re-arm or fire a snap.
         cancelDwell()
         dwellEligible = false
@@ -1069,11 +1065,11 @@ class InteractionController(
         cancelDwell()
         val r = Runnable { onDwellElapsed() }
         dwellRunnable = r
-        handler.postDelayed(r, SHAPE_DWELL_MS)
+        scheduler.postDelayed(r, SHAPE_DWELL_MS)
     }
 
     private fun cancelDwell() {
-        dwellRunnable?.let { handler.removeCallbacks(it) }
+        dwellRunnable?.let { scheduler.removeCallbacks(it) }
         dwellRunnable = null
     }
 
@@ -1857,7 +1853,7 @@ class InteractionController(
             y = topLeft.y,
             width = item.width,
             height = item.bounds().h,
-            fontPx = item.pointSize * com.xnotes.platform.AndroidText.POINTS_TO_PX,
+            fontPx = item.pointSize * com.xnotes.core.pal.TextUnits.POINTS_TO_PX,
             zoom = state.zoom,
             face = item.face,
             rgba = item.rgba,
@@ -2013,7 +2009,7 @@ class InteractionController(
         if (longPressCandidate == null && longPressLocked == null && !showEmptyMenu) return
         val r = Runnable { triggerLongPress() }
         longPressRunnable = r
-        handler.postDelayed(r, LONG_PRESS_MS)
+        scheduler.postDelayed(r, LONG_PRESS_MS)
     }
 
     private fun maybeCancelLongPress(viewport: Pt) {
@@ -2021,7 +2017,7 @@ class InteractionController(
     }
 
     private fun cancelLongPress() {
-        longPressRunnable?.let { handler.removeCallbacks(it) }
+        longPressRunnable?.let { scheduler.removeCallbacks(it) }
         longPressRunnable = null
         longPressCandidate = null
         longPressLocked = null
@@ -2558,7 +2554,7 @@ class InteractionController(
         flingVel = Pt(-fingerVel.x, -fingerVel.y) // scroll moves opposite the finger
         flinging = true
         lastFlingMs = System.nanoTime() / 1_000_000L
-        choreographer.postFrameCallback(flingFrame)
+        scheduler.postFrameCallback(flingFrame)
     }
 
     private fun stopFling() {
@@ -2581,7 +2577,7 @@ class InteractionController(
         if (flingVel.length() < FLING_MIN_STOP || !moved) {
             flinging = false
         } else {
-            choreographer.postFrameCallback(flingFrame)
+            scheduler.postFrameCallback(flingFrame)
         }
     }
 
@@ -2600,11 +2596,11 @@ class InteractionController(
         cancelFadeTimer()
         val r = Runnable { startFade() }
         fadeTimerRunnable = r
-        handler.postDelayed(r, WAND_HOLD_MS)
+        scheduler.postDelayed(r, WAND_HOLD_MS)
     }
 
     private fun cancelFadeTimer() {
-        fadeTimerRunnable?.let { handler.removeCallbacks(it) }
+        fadeTimerRunnable?.let { scheduler.removeCallbacks(it) }
         fadeTimerRunnable = null
     }
 
@@ -2619,7 +2615,7 @@ class InteractionController(
         fading = true
         fadeAlpha = 1.0
         fadeStartMs = System.nanoTime() / 1_000_000L
-        choreographer.postFrameCallback(fadeFrame)
+        scheduler.postFrameCallback(fadeFrame)
     }
 
     private fun stopFade() {
@@ -2637,7 +2633,7 @@ class InteractionController(
             fadeAlpha = 1.0
             fading = false
         } else {
-            choreographer.postFrameCallback(fadeFrame)
+            scheduler.postFrameCallback(fadeFrame)
         }
     }
 
@@ -2656,7 +2652,7 @@ class InteractionController(
         if (!overscrollSettling) {
             overscrollSettling = true
             lastOverscrollMs = System.nanoTime() / 1_000_000L
-            choreographer.postFrameCallback(overscrollFrame)
+            scheduler.postFrameCallback(overscrollFrame)
         }
     }
 
@@ -2709,7 +2705,7 @@ class InteractionController(
             state.overscrollY = 0.0
             overscrollSettling = false
         } else {
-            choreographer.postFrameCallback(overscrollFrame)
+            scheduler.postFrameCallback(overscrollFrame)
         }
         onViewChanged()
         requestRender()
@@ -2717,7 +2713,7 @@ class InteractionController(
 
     // --- PINCH ---
 
-    private fun beginPinch(e: MotionEvent) {
+    private fun beginPinch(e: PointerEvent) {
         liveStroke = null
         strokePageIndex = null
         cancelDwell() // a second finger turns the gesture into a zoom; don't snap a shape mid-pinch
@@ -2738,7 +2734,7 @@ class InteractionController(
         state.zoomingInProgress = true
     }
 
-    private fun updatePinch(e: MotionEvent) {
+    private fun updatePinch(e: PointerEvent) {
         if (e.pointerCount < 2) return
         val a = Pt(e.getX(0).toDouble(), e.getY(0).toDouble())
         val b = Pt(e.getX(1).toDouble(), e.getY(1).toDouble())
@@ -2842,8 +2838,8 @@ class InteractionController(
         mode = PointerMode.IDLE
     }
 
-    private fun resolvePressure(e: MotionEvent, pointerIndex: Int, toolType: Int): Double =
-        if (toolType == MotionEvent.TOOL_TYPE_STYLUS) e.getPressure(pointerIndex).toDouble().coerceIn(0.0, 1.0) else 1.0
+    private fun resolvePressure(e: PointerEvent, pointerIndex: Int, toolType: Int): Double =
+        if (toolType == PointerEvent.TOOL_TYPE_STYLUS) e.getPressure(pointerIndex).toDouble().coerceIn(0.0, 1.0) else 1.0
 
     // --- overlay ---
 
@@ -2959,7 +2955,7 @@ class InteractionController(
 
     // --- ruler ---
 
-    private fun beginRulerTransform(e: MotionEvent) {
+    private fun beginRulerTransform(e: PointerEvent) {
         cancelLongPress()
         val a = Pt(e.getX(0).toDouble(), e.getY(0).toDouble())
         val b = Pt(e.getX(1).toDouble(), e.getY(1).toDouble())
@@ -2971,7 +2967,7 @@ class InteractionController(
         requestRender()
     }
 
-    private fun updateRulerTransform(e: MotionEvent) {
+    private fun updateRulerTransform(e: PointerEvent) {
         if (e.pointerCount < 2) return
         val a = Pt(e.getX(0).toDouble(), e.getY(0).toDouble())
         val b = Pt(e.getX(1).toDouble(), e.getY(1).toDouble())
@@ -2988,7 +2984,7 @@ class InteractionController(
     private fun rulerHandleDist(): Double = 0.30 * minOf(state.viewportW, state.viewportH).toDouble()
 
     /** Drag a rotation handle: spin the ruler about its centre so the grabbed handle tracks the pointer. */
-    private fun updateRulerRotate(e: MotionEvent) {
+    private fun updateRulerRotate(e: PointerEvent) {
         if (ruler.lockAngle) return
         val idx = e.findPointerIndex(drawingPointerId).coerceAtLeast(0)
         val v = (Pt(e.getX(idx).toDouble(), e.getY(idx).toDouble()) - ruler.center) * rulerRotateSign
@@ -3078,7 +3074,7 @@ class InteractionController(
 
     /** The two rotation handles with permanent angle readouts: counter-clockwise from −x on the +x
      *  side, clockwise from +x on the other. Dragging a handle spins the ruler about its centre. */
-    private fun drawRulerHandles(r: Renderer, density: Double, pal: Palette) {
+    private fun drawRulerHandles(r: Renderer, density: Double, pal: ChromePalette) {
         val dist = rulerHandleDist()
         val radius = ruler.handleRadiusPx()
         // Readings are tied to the handle (not the screen side) so they never swap as the ruler turns:
@@ -3100,7 +3096,7 @@ class InteractionController(
     }
 
     /** cm/mm graduations on BOTH long edges; spacing scales with zoom; origin (0) at the ruler centre. */
-    private fun drawRulerTicks(r: Renderer, density: Double, pal: Palette, sMin: Double, sMax: Double) {
+    private fun drawRulerTicks(r: Renderer, density: Double, pal: ChromePalette, sMin: Double, sMax: Double) {
         val cmPx = RulerMath.contentPxPerCm(document.dpi) * state.zoom
         if (cmPx <= 0.0) return
         val d = ruler.direction()
@@ -3140,7 +3136,7 @@ class InteractionController(
         r.drawText(s, Rect(center.x - w / 2.0, center.y - h / 2.0, w, h), font, color)
     }
 
-    private fun drawRulerButtons(r: Renderer, pal: Palette) {
+    private fun drawRulerButtons(r: Renderer, pal: ChromePalette) {
         val radius = ruler.buttonRadiusPx()
         for ((btn, c) in ruler.buttonCenters()) {
             val active = when (btn) {
@@ -3180,7 +3176,7 @@ class InteractionController(
     }
 
     /** A small pill + text readout in viewport space, kept on-screen. */
-    private fun drawReadout(r: Renderer, text: String, at: Pt, density: Double, pal: Palette) {
+    private fun drawReadout(r: Renderer, text: String, at: Pt, density: Double, pal: ChromePalette) {
         val font = FontSpec(7.0 * density, bold = true)
         val padX = 7.0 * density
         val padY = 4.0 * density
@@ -3213,12 +3209,12 @@ class InteractionController(
 
         /** Vendor key some pens send for a genuinely held side button (OnePlus Pad Go 2 Stylo,
          *  which reports a real down/up pair with auto-repeat rather than a momentary click). */
-        const val VENDOR_HELD_BUTTON_KEYCODE = KeyEvent.KEYCODE_F21
+        const val VENDOR_HELD_BUTTON_KEYCODE = KeyCodes.KEYCODE_F21
 
         /** Stylus side-button bits, widened past the S-Pen primary so pens on the secondary/tertiary lines count too. */
         val STYLUS_BUTTON_MASK =
-            MotionEvent.BUTTON_STYLUS_PRIMARY or MotionEvent.BUTTON_STYLUS_SECONDARY or
-                MotionEvent.BUTTON_SECONDARY or MotionEvent.BUTTON_TERTIARY
+            PointerEvent.BUTTON_STYLUS_PRIMARY or PointerEvent.BUTTON_STYLUS_SECONDARY or
+                PointerEvent.BUTTON_SECONDARY or PointerEvent.BUTTON_TERTIARY
 
         /** Magic wand: idle time (ms) after the last stroke before the held batch fades. */
         const val WAND_HOLD_MS = 1000L

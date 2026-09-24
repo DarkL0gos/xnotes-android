@@ -57,7 +57,7 @@ class FrontInk(
     private val state: CanvasState,
     private val view: CanvasView,
     val pad: GlWetPad,
-) {
+) : FrontInkSink {
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -81,7 +81,7 @@ class FrontInk(
     private var decided = false
 
     /** Whether the pad is painting the stroke under the pen. */
-    var live = false
+    override var live = false
         private set
 
     /** An item whose pixels are still the pad's, and the page whose cache takes it, if any. */
@@ -98,7 +98,7 @@ class FrontInk(
     private var holds: List<Held> = emptyList()
 
     /** Whether the pad, not the canvas, is showing [item], so the cache has to leave it out. */
-    fun holding(item: CanvasItem): Boolean {
+    override fun holding(item: CanvasItem): Boolean {
         val list = holds
         for (i in list.indices) if (list[i].item === item) return true
         return false
@@ -133,7 +133,7 @@ class FrontInk(
      * in play are rebuilt each present. The two overlap by a point so the quad bridging them
      * belongs to the later one and no gap can open on the join.
      */
-    fun wet(stroke: Stroke?, pageIndex: Int?) {
+    override fun wet(stroke: Stroke?, pageIndex: Int?) {
         if (stroke == null || pageIndex == null) return abandon()
         val ribbon = stroke.wetRibbon
         // Ink whose runs cannot simply be laid over each other keeps the ordinary path, which
@@ -173,7 +173,7 @@ class FrontInk(
     }
 
     /** Give the pad back with nothing to hand over: a stroke abandoned, snapped to a shape, or gone. */
-    fun abandon() {
+    override fun abandon() {
         owner = null
         meshed = 0
         arc = 0.0
@@ -333,10 +333,10 @@ class FrontInk(
      * file it as it always has. The pad keeps it until the handover, or until a stroke that joins
      * this one has been handed over with it.
      */
-    fun hold(item: CanvasItem, page: Page): Boolean = take(Held(item, page))
+    override fun hold(item: CanvasItem, page: Page): Boolean = take(Held(item, page))
 
     /** [hold] for disappearing ink, which the caller's overlay paints once the pad lets go. */
-    fun holdFading(stroke: Stroke): Boolean = take(Held(stroke, null))
+    override fun holdFading(stroke: Stroke): Boolean = take(Held(stroke, null))
 
     private fun take(held: Held): Boolean {
         if (!live) return false

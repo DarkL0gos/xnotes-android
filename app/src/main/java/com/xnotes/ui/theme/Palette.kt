@@ -1,6 +1,6 @@
 package com.xnotes.ui.theme
 
-import com.xnotes.canvas.CanvasPalette
+import com.xnotes.canvas.ChromePalette
 import com.xnotes.core.model.Rgba
 import kotlin.math.abs
 
@@ -10,22 +10,22 @@ import kotlin.math.abs
  */
 data class Palette(
     override val bg: Rgba,
-    val panel: Rgba,
+    override val panel: Rgba,
     override val paper: Rgba,
     override val paperBorder: Rgba,
     override val accent: Rgba,
     val accentDim: Rgba,
-    val border: Rgba,
-    val text: Rgba,
+    override val border: Rgba,
+    override val text: Rgba,
     override val textDim: Rgba,
     val surface: Rgba,
     val surfaceHi: Rgba,
-    val menuBg: Rgba,
-    val isDark: Boolean,
+    override val menuBg: Rgba,
+    override val isDark: Boolean,
     /** True when the chrome is built from a Material 3 scheme (rounded card corners etc.). */
     val isMaterial: Boolean = false,
     val materialColors: MaterialColors? = null,
-) : CanvasPalette {
+) : ChromePalette {
     /** The accent lightened ~28% (hover highlights). */
     val accentLight: Rgba get() = ColorMath.lighten(accent, 0.28)
 

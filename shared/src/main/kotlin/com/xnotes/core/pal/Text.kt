@@ -1,5 +1,10 @@
 package com.xnotes.core.pal
 
+/** Text units shared by every host: points -> page pixels at the 150-DPI authoring resolution. */
+object TextUnits {
+    const val POINTS_TO_PX = 150f / 72f
+}
+
 /**
  * A font family reference. [id] is the stable serialized token: one of the four
  * generic tokens ([SANS]/[SERIF]/[MONO]/[HAND], resolved to system typefaces) or

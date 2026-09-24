@@ -1,7 +1,6 @@
 package com.xnotes.canvas
 
-import android.os.Handler
-import android.os.Looper
+import com.xnotes.input.UiScheduler
 import com.xnotes.core.geometry.Pt
 import com.xnotes.core.geometry.Rect
 import com.xnotes.core.history.AddPageAuto
@@ -42,6 +41,8 @@ class FlowTextController(
     private val onSessionChanged: (Boolean) -> Unit,
     private val onViewChanged: () -> Unit,
     private val requestRender: () -> Unit,
+    /** The UI thread's timers: long press, autoscroll and the burst idle flush. */
+    private val scheduler: UiScheduler,
 ) {
     var active = false
         private set
@@ -76,7 +77,6 @@ class FlowTextController(
     /** Metrics of the font [pendingStyle] resolves to, so the caret previews it before typing. */
     var caretMetricsFor: ((CharStyle) -> com.xnotes.core.pal.LineMetrics)? = null
 
-    private val handler = Handler(Looper.getMainLooper())
     private val idleFlush = Runnable { flushBurst() }
 
     // one coalesced typing burst: a single paragraph edited since the last flush
@@ -111,7 +111,7 @@ class FlowTextController(
             onViewChanged()
             updateDragSelection(vp)
             requestRender()
-            handler.postDelayed(this, AUTOSCROLL_TICK_MS)
+            scheduler.postDelayed(this, AUTOSCROLL_TICK_MS)
         }
     }
 
@@ -133,7 +133,7 @@ class FlowTextController(
     }
 
     fun endSession() {
-        handler.removeCallbacks(longPressRun)
+        scheduler.removeCallbacks(longPressRun)
         stopAutoscroll()
         draggingHandle = null
         handleFixed = null
@@ -179,8 +179,8 @@ class FlowTextController(
             is FlowHit.Checkbox -> FlowPos(hit.paraIndex, 0)
             FlowHit.BeyondEnd -> flow().endPos()
         }
-        handler.removeCallbacks(longPressRun)
-        handler.postDelayed(longPressRun, LONG_PRESS_MS)
+        scheduler.removeCallbacks(longPressRun)
+        scheduler.postDelayed(longPressRun, scheduler.longPressTimeoutMs)
     }
 
     /** Long press while still: arm selection on the word under the finger (the release opens the menu). */
@@ -218,7 +218,7 @@ class FlowTextController(
             return false
         }
         if (viewport.distanceTo(pressViewport) <= DRAG_SLOP) return false
-        handler.removeCallbacks(longPressRun)
+        scheduler.removeCallbacks(longPressRun)
         pressAnchor = null
         pressHit = null
         return true
@@ -252,21 +252,21 @@ class FlowTextController(
         val wasStill = autoscrollVel == 0.0
         autoscrollVel = vel
         if (vel == 0.0) {
-            handler.removeCallbacks(autoscrollRun)
+            scheduler.removeCallbacks(autoscrollRun)
         } else if (wasStill) {
-            handler.removeCallbacks(autoscrollRun)
-            handler.post(autoscrollRun)
+            scheduler.removeCallbacks(autoscrollRun)
+            scheduler.postDelayed(autoscrollRun, 0L)
         }
     }
 
     private fun stopAutoscroll() {
         autoscrollVel = 0.0
         lastDragViewport = null
-        handler.removeCallbacks(autoscrollRun)
+        scheduler.removeCallbacks(autoscrollRun)
     }
 
     fun release(content: Pt, viewport: Pt, timeMs: Long) {
-        handler.removeCallbacks(longPressRun)
+        scheduler.removeCallbacks(longPressRun)
         stopAutoscroll()
         val hit = pressHit
         pressHit = null
@@ -388,8 +388,8 @@ class FlowTextController(
             onChanged(active)
             burstExtras += autoAppendPages()
             selection = FlowRange.caret(caret)
-            handler.removeCallbacks(idleFlush)
-            handler.postDelayed(idleFlush, BURST_IDLE_MS)
+            scheduler.removeCallbacks(idleFlush)
+            scheduler.postDelayed(idleFlush, BURST_IDLE_MS)
             ensureCaretVisible()
             requestRender()
             return caret
@@ -434,7 +434,7 @@ class FlowTextController(
 
     /** Push the open typing burst (plus any auto-added pages) as one undo step. */
     fun flushBurst() {
-        handler.removeCallbacks(idleFlush)
+        scheduler.removeCallbacks(idleFlush)
         val para = burstPara ?: return
         val before = burstBefore
         burstPara = null
@@ -623,7 +623,6 @@ class FlowTextController(
         const val DOUBLE_TAP_SLOP = 32.0
         const val CARET_MARGIN = 24.0
         const val BURST_IDLE_MS = 2000L
-        val LONG_PRESS_MS = android.view.ViewConfiguration.getLongPressTimeout().toLong()
 
         const val HANDLE_RADIUS_DP = 8.0
         const val HANDLE_HIT_DP = 26.0

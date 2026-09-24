@@ -755,11 +755,15 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
 
     val bookmarks: List<Bookmark> get() = state.document.bookmarks.toList()
 
+    /** The main thread's timers, shared by the canvas controllers. */
+    private val uiScheduler = com.xnotes.platform.AndroidUiScheduler()
+
     val controller: InteractionController = InteractionController(
         state,
         history,
         textMeasurer,
         requestRender = { onRender() },
+        scheduler = uiScheduler,
         chromePalette = { palette },
         onContentChanged = { refreshContent() },
         onViewChanged = { refreshView() },
@@ -787,6 +791,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         onSessionChanged = { active -> onFlowSessionChanged(active) },
         onViewChanged = { refreshView() },
         requestRender = { onRender() },
+        scheduler = uiScheduler,
     ).also { ctrl ->
         controller.flowText = ctrl
         ctrl.onHaptic = {
@@ -968,20 +973,26 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         if (controller.frontInk?.live != true) view.requestRender()
     }
 
+    // One adapter per event stream: each is repointed at the next MotionEvent, never retained.
+    private val touchEvent = com.xnotes.platform.AndroidPointerEvent()
+    private val hoverEvent = com.xnotes.platform.AndroidPointerEvent()
+    private val genericEvent = com.xnotes.platform.AndroidPointerEvent()
+
     init {
         view.input = { ev ->
             // Any fresh canvas touch quietly retires the flow action bar and still does its job.
             if (ev.actionMasked == android.view.MotionEvent.ACTION_DOWN) flowContextMenu = null
-            controller.onTouch(ev)
+            controller.onTouch(touchEvent.wrap(ev))
         }
         view.onTwoFingerTap = { dispatchTapGesture(preferences.twoFingerTap) }
         view.onThreeFingerTap = { dispatchTapGesture(preferences.threeFingerTap) }
-        view.hover = { controller.onHover(it) }
-        view.genericMotion = { controller.onGenericMotion(it) }
+        view.hover = { controller.onHover(hoverEvent.wrap(it)) }
+        view.genericMotion = { controller.onGenericMotion(genericEvent.wrap(it)) }
         view.drawOverlay = { renderer, _ -> controller.drawOverlay(renderer) }
-        controller.frontInk = com.xnotes.canvas.FrontInk(state, view, pad)
-        pad.onSurfaceLost = { controller.frontInk?.surfaceLost() }
-        view.debugOverlay.frontHud = { controller.frontInk?.hud }
+        val frontInk = com.xnotes.canvas.FrontInk(state, view, pad)
+        controller.frontInk = frontInk
+        pad.onSurfaceLost = { frontInk.surfaceLost() }
+        view.debugOverlay.frontHud = { frontInk.hud }
         view.afterLayout = { refreshView() }
         view.onScrollbarScrolled = { refreshView() }
         // The canvas starts at built-in defaults; push any non-default global View settings
