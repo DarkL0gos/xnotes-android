@@ -109,3 +109,12 @@ hosts. Build and test it standalone:
 cmake -S native/highlight -B build/native-highlight
 cmake --build build/native-highlight -j && ctest --test-dir build/native-highlight
 ```
+
+The core also builds as a native shared library for non-JVM hosts (the planned Qt app):
+`libxnotes.so`, with the C API in `capi/include/xnotes.h`. Build it and run its C test
+(needs gcc; no JVM at run time):
+
+```bash
+./gradlew -PdesktopOnly=true :capi:cTest
+# library: capi/build/bin/linuxX64/xnotesReleaseShared/libxnotes.so
+```

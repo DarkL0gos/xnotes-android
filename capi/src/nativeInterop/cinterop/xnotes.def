@@ -1,0 +1,3 @@
+headers = xnotes.h
+headerFilter = xnotes.h
+package = com.xnotes.capi.c
