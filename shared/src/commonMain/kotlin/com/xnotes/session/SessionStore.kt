@@ -6,16 +6,20 @@ import com.xnotes.format.CanvasCodec
 import com.xnotes.format.DocumentCodec
 import com.xnotes.format.JsonPull
 import com.xnotes.format.JsonWrite
-import com.xnotes.format.utf8Reader
+import com.xnotes.core.platform.File
+import com.xnotes.core.platform.OutputStream
+import com.xnotes.core.platform.asInputStream
+import com.xnotes.core.platform.asOutputStream
+import com.xnotes.core.platform.asPath
+import com.xnotes.format.Utf8CharSource
 import com.xnotes.format.utf8Writer
-import java.io.File
-import java.io.OutputStream
-import java.nio.channels.FileChannel
-import java.nio.file.AtomicMoveNotSupportedException
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
-import java.nio.file.StandardOpenOption
-import java.util.UUID
+import okio.FileSystem
+import okio.IOException
+import okio.Path
+import okio.buffer
+import okio.use
+import kotlin.uuid.ExperimentalUuidApi
+import kotlin.uuid.Uuid
 
 /** The document a working session holds: the two models share no shape, so the kind travels with it. */
 sealed interface SessionDocument {
@@ -55,7 +59,9 @@ class SessionStore(
     private val noteCodec: DocumentCodec,
     private val canvasCodec: CanvasCodec,
 ) {
-    private val metaFile = File(dir, META)
+    private val dirPath: Path = dir.asPath()
+    private val fs = FileSystem.SYSTEM
+    private val metaFile: Path = dirPath / META
 
     /** A restored session. Assets (images, the PDF) were extracted into the load's work dir. */
     class Snapshot(val document: SessionDocument, val view: Map<String, Double>)
@@ -65,15 +71,16 @@ class SessionStore(
      * only the view state when the content is unchanged since the last save; the document is
      * still written when the session has none yet.
      */
+    @OptIn(ExperimentalUuidApi::class)
     fun save(document: SessionDocument, view: Map<String, Double> = emptyMap(), writeDocument: Boolean = true) {
-        dir.mkdirs()
+        fs.createDirectories(dirPath)
         val committed = readMeta()
         val reuse = committed?.file?.takeIf {
-            !writeDocument && it.kind == kindOf(document) && File(dir, it.name).isFile
+            !writeDocument && it.kind == kindOf(document) && isFile(dirPath / it.name)
         }
-        val docName = reuse?.name ?: "document-${UUID.randomUUID()}.${kindOf(document).extension}"
+        val docName = reuse?.name ?: "document-${Uuid.random()}.${kindOf(document).extension}"
         if (reuse == null) {
-            writeSynced(File(dir, docName)) { out ->
+            writeSynced(dirPath / docName) { out ->
                 when (document) {
                     is SessionDocument.Note -> noteCodec.write(document.document, out)
                     is SessionDocument.Canvas -> canvasCodec.write(document.document, out)
@@ -89,9 +96,10 @@ class SessionStore(
     /** Load the committed session, extracting its assets into [workDir]; null when there is none. */
     fun load(workDir: File): Snapshot? = runCatching {
         val meta = readMeta() ?: return null
-        val file = File(dir, meta.file.name)
-        if (!file.isFile) return null
-        val document = file.inputStream().buffered().use { input ->
+        val file = dirPath / meta.file.name
+        if (!isFile(file)) return null
+        val document = fs.source(file).use { source ->
+            val input = source.asInputStream()
             when (meta.file.kind) {
                 Kind.NOTE -> SessionDocument.Note(noteCodec.read(input, workDir, workDir).also {
                     it.path = meta.path
@@ -109,12 +117,19 @@ class SessionStore(
     }.getOrNull()
 
     /** Whether a committed session exists (without reading its document). */
-    fun exists(): Boolean = readMeta()?.let { File(dir, it.file.name).isFile } == true
+    fun exists(): Boolean = readMeta()?.let { isFile(dirPath / it.file.name) } == true
 
     /** Discard the session, so the next launch restores nothing. The metadata goes first. */
     fun clear() {
-        metaFile.delete()
+        delete(metaFile)
         sweep(keep = null)
+    }
+
+    private fun isFile(path: Path): Boolean = fs.metadataOrNull(path)?.isRegularFile == true
+
+    /** Delete [path] if present, never throwing. */
+    private fun delete(path: Path) {
+        runCatching { fs.delete(path) }
     }
 
     private enum class Kind(val id: String, val extension: String) {
@@ -139,26 +154,34 @@ class SessionStore(
 
     /** Remove every document and temp file except [keep]. */
     private fun sweep(keep: String?) {
-        dir.listFiles()?.forEach { f ->
+        fs.listOrNull(dirPath)?.forEach { f ->
             val stale = (f.name.startsWith("document-") && f.name != keep) || f.name.endsWith(TMP_SUFFIX)
-            if (stale) f.delete()
+            if (stale) delete(f)
         }
     }
 
     /** Write [target] through a temp file that is flushed to disk, then renamed over it. */
-    private fun writeSynced(target: File, body: (OutputStream) -> Unit) {
-        val tmp = File(dir, target.name + TMP_SUFFIX)
+    private fun writeSynced(target: Path, body: (OutputStream) -> Unit) {
+        val tmp = dirPath / (target.name + TMP_SUFFIX)
         try {
-            Files.newOutputStream(tmp.toPath()).buffered().use(body)
-            FileChannel.open(tmp.toPath(), StandardOpenOption.WRITE).use { it.force(true) }
+            fs.openReadWrite(tmp, mustCreate = false, mustExist = false).use { handle ->
+                handle.resize(0L)
+                val sink = handle.sink()
+                try {
+                    body(sink.asOutputStream())
+                } finally {
+                    sink.close()
+                }
+                handle.flush() // fsync: the bytes are on disk before the rename can publish them
+            }
             try {
-                Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE,
-                    StandardCopyOption.REPLACE_EXISTING)
-            } catch (_: AtomicMoveNotSupportedException) {
-                Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                fs.atomicMove(tmp, target)
+            } catch (_: IOException) {
+                // A file system without atomic rename: replace by copying, as a plain move would.
+                fs.copy(tmp, target)
             }
         } finally {
-            tmp.delete()
+            delete(tmp)
         }
     }
 
@@ -181,9 +204,9 @@ class SessionStore(
     }
 
     private fun readMeta(): Meta? = runCatching {
-        if (!metaFile.isFile) return null
-        metaFile.inputStream().buffered().use { input ->
-            val json = JsonPull(utf8Reader(input))
+        if (!isFile(metaFile)) return null
+        fs.source(metaFile).use { source ->
+            val json = JsonPull(Utf8CharSource(source.buffer()))
             var kind: Kind? = null
             var file: String? = null
             var path: String? = null

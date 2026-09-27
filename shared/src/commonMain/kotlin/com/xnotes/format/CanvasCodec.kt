@@ -15,7 +15,17 @@ import com.xnotes.core.model.Rgba
 import com.xnotes.core.model.ShapeItem
 import com.xnotes.core.model.Stroke
 import com.xnotes.core.pal.ImageCodec
+import com.xnotes.core.platform.DEFLATE_BEST_SPEED
 import com.xnotes.core.platform.File
+import com.xnotes.core.platform.ZipEntry
+import com.xnotes.core.platform.ZipInputStream
+import com.xnotes.core.platform.ZipMethod
+import com.xnotes.core.platform.ZipOutputStream
+import com.xnotes.core.platform.asPath
+import com.xnotes.core.platform.createTempFile
+import com.xnotes.core.platform.formatInstant
+import com.xnotes.core.platform.parseInstant
+import com.xnotes.core.platform.pathString
 import com.xnotes.core.platform.InputStream
 import com.xnotes.core.platform.OutputStream
 import com.xnotes.core.stroke.Sample
@@ -24,12 +34,9 @@ import com.xnotes.core.tools.Tool
 import com.xnotes.core.tools.ToolConfig
 import com.xnotes.core.tools.ToolDefaults
 import com.xnotes.core.util.Svg
-import java.io.FileInputStream
-import java.io.FileOutputStream
-import java.util.zip.CRC32
-import java.util.zip.ZipEntry
-import java.util.zip.ZipInputStream
-import java.util.zip.ZipOutputStream
+import okio.FileSystem
+import okio.buffer
+import okio.use
 
 /** Thrown when a file is not a valid `.xcanvas` bundle. */
 class XCanvasFormatException(message: String) : Exception(message)
@@ -61,14 +68,14 @@ class CanvasCodec(private val imageCodec: ImageCodec) {
         ZipOutputStream(out).use { zos ->
             // ALWAYS LEVEL 1, for the reasons spelled out at the same line in [DocumentCodec.write].
             // Do not put it back to the default 6 to save disk. Speed wins here, always.
-            zos.setLevel(java.util.zip.Deflater.BEST_SPEED)
+            zos.setLevel(DEFLATE_BEST_SPEED)
             // Assets first and the manifest LAST, matching [DocumentCodec.write]: nothing behind
             // the manifest means it can be replaced in place later without moving the assets.
             // Each image streams straight from its temp file into the bundle, never as a byte[].
             for ((name, file) in assets) zos.putStored(name, file, isCancelled)
             // The manifest streams straight into the deflater, so a dense canvas's JSON is never
             // materialized as a DOM, a String, or a byte[].
-            zos.putNextEntry(ZipEntry("manifest.json").apply { method = ZipEntry.DEFLATED })
+            zos.putNextEntry(ZipEntry("manifest.json").apply { setMethod(ZipMethod.DEFLATED) })
             val w = utf8Writer(zos)
             writeManifest(JsonWrite(w), doc, assets)
             w.flush()
@@ -90,7 +97,7 @@ class CanvasCodec(private val imageCodec: ImageCodec) {
             // Readers match assets by manifest name (any extension); .svg keeps the bundle honest
             // and older readers skip the item they can't decode.
             val ext = if (Svg.isSvgFile(item.image.file)) "svg" else "png"
-            out.add("assets/image-%03d.%s".format(out.size, ext) to item.image.file)
+            out.add("assets/image-${pad3(out.size)}.$ext" to item.image.file)
         }
         return out
     }
@@ -100,7 +107,7 @@ class CanvasCodec(private val imageCodec: ImageCodec) {
         j.name("format").value(FORMAT)
         j.name("version").value(VERSION)
         j.name("writer").value(WRITER)
-        doc.created?.let { j.name("created").value(java.time.Instant.ofEpochMilli(it).toString()) }
+        doc.created?.let { j.name("created").value(formatInstant(it)) }
         j.name("dpi").value(doc.dpi)
         writeBackground(j, doc.background)
         // The last view and the waypoints are written only when there is something to say.
@@ -281,10 +288,10 @@ class CanvasCodec(private val imageCodec: ImageCodec) {
         var manifest: ParsedManifest? = null
         val imageFiles = HashMap<String, File>()
         ZipInputStream(input).use { zis ->
-            var entry: ZipEntry? = zis.nextEntry
+            var entry: ZipEntry? = zis.getNextEntry()
             while (entry != null) {
-                if (!entry.isDirectory) {
-                    val name = entry.name
+                if (!entry.isDirectory()) {
+                    val name = entry.getName()
                     if (name == "manifest.json") {
                         // Parsed straight off the zip stream, so a dense canvas's manifest is never
                         // materialized as bytes, a String, or a DOM.
@@ -297,15 +304,15 @@ class CanvasCodec(private val imageCodec: ImageCodec) {
                         }
                     } else if (name.startsWith("assets/image-")) {
                         if (imageDir != null) {
-                            val f = File.createTempFile("img", null, imageDir)
-                            FileOutputStream(f).use { zis.copyTo(it) }
+                            val f = createTempFile("img", null, imageDir)
+                            copyToFile(zis, f)
                             imageFiles[name] = f
                         }
                     }
                     // Anything else is an asset from a newer version: skipped, never buffered.
                 }
                 zis.closeEntry()
-                entry = zis.nextEntry
+                entry = zis.getNextEntry()
             }
         }
 
@@ -331,21 +338,13 @@ class CanvasCodec(private val imageCodec: ImageCodec) {
         return doc
     }
 
-    /**
-     * A canvas's created time, read from [ch] through the zip's central directory straight to the head of
-     * the manifest, so no item or image is read. Null when [ch] is not a canvas it can read that way, for
-     * [peek] from a stream instead.
-     */
-    fun peek(ch: java.nio.channels.FileChannel): CanvasPeek? =
-        runCatching { ZipTail.readEntry(ch, "manifest.json") { peekManifest(it) } }.getOrNull()
-
     /** [peek] for a canvas that only comes as a stream. */
     fun peek(input: InputStream): CanvasPeek? = runCatching {
         ZipInputStream(input).use { zis ->
-            var entry = zis.nextEntry
+            var entry = zis.getNextEntry()
             while (entry != null) {
-                if (entry.name == "manifest.json") return@runCatching peekManifest(zis)
-                entry = zis.nextEntry
+                if (entry.getName() == "manifest.json") return@runCatching peekManifest(zis)
+                entry = zis.getNextEntry()
             }
             null
         }
@@ -360,7 +359,7 @@ class CanvasCodec(private val imageCodec: ImageCodec) {
         while (p.hasNext()) {
             when (p.nextName()) {
                 "format" -> isCanvas = stringOr(p, "") == FORMAT
-                "created" -> created = stringOrNull(p)?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() }
+                "created" -> created = stringOrNull(p)?.let { parseInstant(it) }
                 // The writer puts every field the peek wants ahead of the items, so the rest can go unread.
                 "items" -> break
                 else -> p.skipValue()
@@ -403,7 +402,7 @@ class CanvasCodec(private val imageCodec: ImageCodec) {
                     m.formatOk = true
                 }
                 "writer" -> m.writer = intOr(p, 0)
-                "created" -> m.created = stringOrNull(p)?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() }
+                "created" -> m.created = stringOrNull(p)?.let { parseInstant(it) }
                 "dpi" -> m.dpi = intOr(p, PageSize.DEFAULT_DPI)
                 "background" -> m.background = parseBackground(p)
                 "view" -> m.view = parseWaypoint(p, named = false)
@@ -696,7 +695,7 @@ class CanvasCodec(private val imageCodec: ImageCodec) {
         var w = spec.srcW
         var h = spec.srcH
         if (w <= 0 || h <= 0) {
-            val probed = imageCodec.probeFile(file.path) ?: return null
+            val probed = imageCodec.probeFile(file.pathString) ?: return null
             w = probed.width
             h = probed.height
         }
@@ -838,18 +837,18 @@ class CanvasPeek(val created: Long?)
 
 private fun ZipOutputStream.putStored(name: String, file: File, isCancelled: () -> Boolean) {
     val buf = ByteArray(64 * 1024)
-    val size = file.length()
+    val size = lengthOf(file)
     val entry = ZipEntry(name).apply {
-        method = ZipEntry.STORED
-        this.size = size
-        compressedSize = size
-        this.crc = AssetCrc.of(file)
+        setMethod(ZipMethod.STORED)
+        setSize(size)
+        setCompressedSize(size)
+        setCrc(AssetCrc.of(file))
     }
     putNextEntry(entry)
-    FileInputStream(file).use { input ->
+    FileSystem.SYSTEM.source(file.asPath()).buffer().use { input ->
         while (true) {
             if (isCancelled()) throw CanvasCodec.WriteCancelled()
-            val n = input.read(buf)
+            val n = input.read(buf, 0, buf.size)
             if (n < 0) break
             write(buf, 0, n)
         }

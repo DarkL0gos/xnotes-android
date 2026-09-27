@@ -69,6 +69,7 @@ import com.xnotes.editor.NoteEditor
 import com.xnotes.editor.NoteEditorHost
 import com.xnotes.format.DocumentCodec
 import com.xnotes.format.XNoteFormatException
+import com.xnotes.format.peek
 import com.xnotes.platform.AndroidImageCodec
 import com.xnotes.platform.AndroidSurfaceFactory
 import com.xnotes.platform.AndroidTextMeasurer

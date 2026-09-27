@@ -20,7 +20,20 @@ import com.xnotes.core.model.TextItem
 import com.xnotes.core.pal.FontFace
 import com.xnotes.core.pal.ImageCodec
 import com.xnotes.core.pal.TextMeasurer
+import com.xnotes.core.platform.DEFLATE_BEST_SPEED
 import com.xnotes.core.platform.File
+import com.xnotes.core.platform.ZipEntry
+import com.xnotes.core.platform.ZipInputStream
+import com.xnotes.core.platform.ZipMethod
+import com.xnotes.core.platform.ZipOutputStream
+import com.xnotes.core.platform.asPath
+import com.xnotes.core.platform.asSink
+import com.xnotes.core.platform.asSource
+import com.xnotes.core.platform.createTempFile
+import com.xnotes.core.platform.formatInstant
+import com.xnotes.core.platform.monotonicNanos
+import com.xnotes.core.platform.parseInstant
+import com.xnotes.core.platform.pathString
 import com.xnotes.core.platform.InputStream
 import com.xnotes.core.platform.OutputStream
 import com.xnotes.core.stroke.Sample
@@ -30,12 +43,9 @@ import com.xnotes.core.tools.Tool
 import com.xnotes.core.tools.ToolConfig
 import com.xnotes.core.tools.ToolDefaults
 import com.xnotes.core.util.Svg
-import java.io.FileInputStream
-import java.io.FileOutputStream
-import java.util.zip.CRC32
-import java.util.zip.ZipEntry
-import java.util.zip.ZipInputStream
-import java.util.zip.ZipOutputStream
+import okio.FileSystem
+import okio.buffer
+import okio.use
 
 /** Thrown when a file is not a valid `.xnote` bundle. */
 class XNoteFormatException(message: String) : Exception(message)
@@ -83,59 +93,13 @@ class DocumentCodec(
         var compactMs = 0L
     }
 
-    /** Times what a read spends inside the inflater, so parsing can be told apart from it. */
-    private class InflateProbe(private val source: InputStream) : InputStream() {
-        var nanos = 0L
-
-        override fun read(): Int {
-            val t = System.nanoTime()
-            val v = source.read()
-            nanos += System.nanoTime() - t
-            return v
-        }
-
-        override fun read(b: ByteArray, off: Int, len: Int): Int {
-            val t = System.nanoTime()
-            val n = source.read(b, off, len)
-            nanos += System.nanoTime() - t
-            return n
-        }
-
-        override fun close() = Unit
-    }
-
-    /** Times what the manifest spends being compressed, so the two halves of [WriteTiming.manifestMs]
-     *  can be told apart. Never closes what it wraps: the zip entry outlives it. */
-    private class DeflateProbe(private val out: OutputStream) : OutputStream() {
-        var nanos = 0L
-        var bytes = 0L
-
-        override fun write(b: Int) {
-            val t = System.nanoTime()
-            out.write(b)
-            nanos += System.nanoTime() - t
-            bytes++
-        }
-
-        override fun write(b: ByteArray, off: Int, len: Int) {
-            val t = System.nanoTime()
-            out.write(b, off, len)
-            nanos += System.nanoTime() - t
-            bytes += len
-        }
-
-        override fun flush() = out.flush()
-
-        override fun close() = Unit
-    }
-
     fun write(
         doc: Document,
         out: OutputStream,
         timing: WriteTiming? = null,
         isCancelled: () -> Boolean = { false },
     ) {
-        val started = System.nanoTime()
+        val started = monotonicNanos()
         // Named up front by the same walk the manifest makes, so the entries can go in before it.
         val assets = imageAssets(doc)
         ZipOutputStream(out).use { zos ->
@@ -144,7 +108,7 @@ class DocumentCodec(
             // well either way: measured on a 17 page handwriting note, level 6 spent 1649 ms
             // deflating against level 1's 315 ms, for a file ~18% bigger. Saving is time the user
             // waits through; disk is cheap. Never trade their seconds for a few megabytes.
-            zos.setLevel(java.util.zip.Deflater.BEST_SPEED)
+            zos.setLevel(DEFLATE_BEST_SPEED)
             // Assets first and the manifest LAST, which is what lets a later save replace the
             // manifest in place: nothing sits behind it, so it can grow or shrink without moving a
             // byte of the (possibly enormous) PDF ahead of it. See [ZipTail]. Entry order means
@@ -155,10 +119,10 @@ class DocumentCodec(
             // The source PDF streams straight from disk for the same reason. [isCancelled] lets a
             // long copy abort (e.g. import cancel).
             doc.pdfFile?.let { zos.putStored("assets/source.pdf", it, isCancelled) }
-            val assetsDone = System.nanoTime()
+            val assetsDone = monotonicNanos()
             writeTail(zos, doc, assets, timing)
             timing?.assetsMs = (assetsDone - started) / 1_000_000L
-            timing?.manifestMs = (System.nanoTime() - assetsDone) / 1_000_000L
+            timing?.manifestMs = (monotonicNanos() - assetsDone) / 1_000_000L
         }
     }
 
@@ -176,13 +140,13 @@ class DocumentCodec(
         // The flow lives in its own ODF entry, written only when non-empty (or carrying
         // custom defaults) so untouched notes stay byte-identical to old readers.
         if (!doc.flow.isEmpty || !com.xnotes.core.text.FlowDefaults.of(doc.flow).isEmpty) {
-            zos.putDeflated(FlowXml.ENTRY_NAME, FlowXml.write(doc.flow))
+            zos.putDeflated(FLOW_ENTRY_NAME, FlowFormat.write(doc.flow))
         }
         // The manifest streams straight into the deflater: a dense note's JSON is never
         // materialized as an org.json DOM, a String, or a byte[] (three copies per save).
-        zos.putNextEntry(ZipEntry("manifest.json").apply { method = ZipEntry.DEFLATED })
-        val probe = DeflateProbe(zos)
-        val w = utf8Writer(probe)
+        zos.putNextEntry(ZipEntry("manifest.json").apply { setMethod(ZipMethod.DEFLATED) })
+        val probe = DeflateProbe(zos.asSink())
+        val w = Utf8CharSink(probe.buffer())
         writeManifest(JsonWrite(w), doc, assets)
         w.flush()
         zos.closeEntry()
@@ -203,7 +167,7 @@ class DocumentCodec(
                 // Readers match assets by manifest name (any extension); .svg keeps the bundle
                 // honest and older readers skip the item they can't decode.
                 val ext = if (Svg.isSvgFile(item.image.file)) "svg" else "png"
-                out.add("assets/image-%03d.%s".format(out.size, ext) to item.image.file)
+                out.add("assets/image-${pad3(out.size)}.$ext" to item.image.file)
             }
         }
         return out
@@ -216,7 +180,7 @@ class DocumentCodec(
         j.name("format").value(FORMAT)
         j.name("version").value(VERSION)
         j.name("writer").value(WRITER)
-        doc.created?.let { j.name("created").value(java.time.Instant.ofEpochMilli(it).toString()) }
+        doc.created?.let { j.name("created").value(formatInstant(it)) }
         j.name("dpi").value(doc.dpi)
         j.name("has_pdf").value(doc.pdfFile != null)
         j.name("bookmarks").beginArray()
@@ -435,51 +399,51 @@ class DocumentCodec(
         val imageFiles = HashMap<String, File>()
         var pdfFile: File? = null
         ZipInputStream(input).use { zis ->
-            var entry: ZipEntry? = zis.nextEntry
+            var entry: ZipEntry? = zis.getNextEntry()
             while (entry != null) {
-                if (!entry.isDirectory) {
-                    val name = entry.name
+                if (!entry.isDirectory()) {
+                    val name = entry.getName()
                     if (name == "manifest.json") {
                         // Parsed straight off the zip stream: a dense note's manifest is never
                         // materialized as bytes, a String, or an org.json DOM (which held a boxed
                         // wrapper per number and made big notes cost minutes and ~3x their heap).
                         if (manifest == null) {
-                            val probe = InflateProbe(zis)
-                            val started = System.nanoTime()
+                            val probe = InflateProbe(zis.asSource())
+                            val started = monotonicNanos()
                             manifest = try {
-                                parseManifest(JsonPull(utf8Reader(probe)))
+                                parseManifest(JsonPull(Utf8CharSource(probe.buffer())))
                             } catch (_: JsonPullException) {
                                 throw XNoteFormatException(NOT_XNOTE)
                             }
                             timing?.inflateMs = probe.nanos / 1_000_000L
-                            timing?.parseMs = (System.nanoTime() - started - probe.nanos) / 1_000_000L
+                            timing?.parseMs = (monotonicNanos() - started - probe.nanos) / 1_000_000L
                         }
                     } else if (name == "assets/source.pdf") {
                         // Never slurp the PDF into memory: stream it to disk (or skip it).
                         if (pdfDir != null) {
-                            val started = System.nanoTime()
-                            val f = File.createTempFile("src", ".pdf", pdfDir)
-                            FileOutputStream(f).use { zis.copyTo(it) }
+                            val started = monotonicNanos()
+                            val f = createTempFile("src", ".pdf", pdfDir)
+                            copyToFile(zis, f)
                             pdfFile = f
-                            timing?.assetsMs += (System.nanoTime() - started) / 1_000_000L
+                            timing?.assetsMs += (monotonicNanos() - started) / 1_000_000L
                         }
                     } else if (name.startsWith("assets/image-")) {
                         // Stream images to disk too (or skip): a note full of large images must never
                         // load all their encoded bytes into the heap at once.
                         if (imageDir != null) {
-                            val started = System.nanoTime()
-                            val f = File.createTempFile("img", null, imageDir)
-                            FileOutputStream(f).use { zis.copyTo(it) }
+                            val started = monotonicNanos()
+                            val f = createTempFile("img", null, imageDir)
+                            copyToFile(zis, f)
                             imageFiles[name] = f
-                            timing?.assetsMs += (System.nanoTime() - started) / 1_000_000L
+                            timing?.assetsMs += (monotonicNanos() - started) / 1_000_000L
                         }
-                    } else if (name == FlowXml.ENTRY_NAME) {
-                        flowBytes = zis.readBytes()
+                    } else if (name == FLOW_ENTRY_NAME) {
+                        flowBytes = readRemaining(zis)
                     }
                     // Anything else is an asset from a newer version: skipped, never buffered.
                 }
                 zis.closeEntry()
-                entry = zis.nextEntry
+                entry = zis.getNextEntry()
             }
         }
 
@@ -494,11 +458,11 @@ class DocumentCodec(
         if (m.hasPdf) {
             doc.pdfFile = pdfFile
         } else {
-            pdfFile?.delete() // a stray PDF with no manifest flag: don't leak the temp file
+            pdfFile?.let { deleteQuietly(it) } // a stray PDF with no manifest flag: don't leak the temp file
         }
 
         doc.bookmarks.addAll(m.bookmarks)
-        flowBytes?.let { FlowXml.readInto(doc.flow, it) }
+        flowBytes?.let { FlowFormat.readInto(doc.flow, it) }
 
         if (m.pages.isEmpty()) {
             doc.pages.add(Page.blank(PageSize.A4, Orientation.PORTRAIT, m.dpi))
@@ -520,7 +484,7 @@ class DocumentCodec(
         // all) carries far more samples than the ribbon needs; compact it once at load. In-memory
         // only — the file shrinks whenever the user next edits and saves.
         if (m.writer < SIMPLIFIED_SINCE && StrokeSimplify.enabled) {
-            val compactStart = System.nanoTime()
+            val compactStart = monotonicNanos()
             doc.compactedOnLoad = true
             for (page in doc.pages) {
                 for (item in page.items) {
@@ -535,7 +499,7 @@ class DocumentCodec(
                     item.invalidate() // also frees the geometry built for the width channel
                 }
             }
-            timing?.compactMs = (System.nanoTime() - compactStart) / 1_000_000L
+            timing?.compactMs = (monotonicNanos() - compactStart) / 1_000_000L
         }
         return doc
     }
@@ -567,21 +531,13 @@ class DocumentCodec(
         val locked: Boolean,
     )
 
-    /**
-     * A note's page count, PDF flag and created time, read from [ch] through the zip's central directory
-     * straight to the manifest, so neither the embedded PDF nor any image is read. Null when [ch] is not a
-     * note it can read that way (a pipe from a cloud provider, say), for [peek] from a stream instead.
-     */
-    fun peek(ch: java.nio.channels.FileChannel): NotePeek? =
-        runCatching { ZipTail.readEntry(ch, "manifest.json") { peekManifest(it) } }.getOrNull()
-
     /** [peek] for a note that only comes as a stream: reads through to the manifest, skipping what comes before it. */
     fun peek(input: InputStream): NotePeek? = runCatching {
         ZipInputStream(input).use { zis ->
-            var entry = zis.nextEntry
+            var entry = zis.getNextEntry()
             while (entry != null) {
-                if (entry.name == "manifest.json") return@runCatching peekManifest(zis)
-                entry = zis.nextEntry
+                if (entry.getName() == "manifest.json") return@runCatching peekManifest(zis)
+                entry = zis.getNextEntry()
             }
             null
         }
@@ -598,7 +554,7 @@ class DocumentCodec(
         while (p.hasNext()) {
             when (p.nextName()) {
                 "format" -> isNote = stringOr(p, "") == FORMAT
-                "created" -> created = stringOrNull(p)?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() }
+                "created" -> created = stringOrNull(p)?.let { parseInstant(it) }
                 "has_pdf" -> hasPdf = boolOr(p, false)
                 "pages" -> {
                     if (p.peek() != JsonPull.Token.BEGIN_ARRAY) { p.skipValue(); continue }
@@ -624,7 +580,7 @@ class DocumentCodec(
                     m.formatOk = true
                 }
                 "writer" -> m.writer = intOr(p, 0)
-                "created" -> m.created = stringOrNull(p)?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() }
+                "created" -> m.created = stringOrNull(p)?.let { parseInstant(it) }
                 "dpi" -> m.dpi = intOr(p, PageSize.DEFAULT_DPI)
                 "has_pdf" -> m.hasPdf = boolOr(p, false)
                 "style" -> m.style = parseStyle(p)
@@ -1002,7 +958,7 @@ class DocumentCodec(
         var h = spec.srcH
         if (w <= 0 || h <= 0) {
             // Legacy notes (and any without stored dims): read the native size without decoding pixels.
-            val probed = imageCodec.probeFile(file.path) ?: return null
+            val probed = imageCodec.probeFile(file.pathString) ?: return null
             w = probed.width
             h = probed.height
         }
@@ -1141,7 +1097,7 @@ class DocumentCodec(
 class NotePeek(val pages: Int, val hasPdf: Boolean, val created: Long?)
 
 private fun ZipOutputStream.putDeflated(name: String, data: ByteArray) {
-    val entry = ZipEntry(name).apply { method = ZipEntry.DEFLATED }
+    val entry = ZipEntry(name).apply { setMethod(ZipMethod.DEFLATED) }
     putNextEntry(entry)
     write(data)
     closeEntry()
@@ -1156,18 +1112,18 @@ private fun ZipOutputStream.putDeflated(name: String, data: ByteArray) {
  */
 private fun ZipOutputStream.putStored(name: String, file: File, isCancelled: () -> Boolean) {
     val buf = ByteArray(64 * 1024)
-    val size = file.length()
+    val size = lengthOf(file)
     val entry = ZipEntry(name).apply {
-        method = ZipEntry.STORED
-        this.size = size
-        compressedSize = size
-        this.crc = AssetCrc.of(file)
+        setMethod(ZipMethod.STORED)
+        setSize(size)
+        setCompressedSize(size)
+        setCrc(AssetCrc.of(file))
     }
     putNextEntry(entry)
-    FileInputStream(file).use { input ->
+    FileSystem.SYSTEM.source(file.asPath()).buffer().use { input ->
         while (true) {
             if (isCancelled()) throw DocumentCodec.WriteCancelled()
-            val n = input.read(buf)
+            val n = input.read(buf, 0, buf.size)
             if (n < 0) break
             write(buf, 0, n)
         }
