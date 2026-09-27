@@ -89,7 +89,7 @@ With JDK 17 or 21 installed, build and run without an Android SDK. Both versions
 produce Java 17 compatible desktop bytecode:
 
 ```bash
-./gradlew -PdesktopOnly=true :shared:test :desktop:test :desktop:installDist
+./gradlew -PdesktopOnly=true :shared:jvmTest :desktop:test :desktop:installDist
 ./desktop/build/install/desktop/bin/desktop /path/to/file.xnote
 ```
 
