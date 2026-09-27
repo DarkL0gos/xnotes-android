@@ -12,6 +12,7 @@ import com.xnotes.core.history.MoveItems
 import com.xnotes.core.history.TransformItems
 import com.xnotes.core.model.CanvasItem
 import com.xnotes.core.model.GeometrySnapshot
+import kotlin.math.PI
 
 /**
  * What is selected on the canvas, and the arithmetic of moving, scaling and rotating it.
@@ -183,7 +184,7 @@ class CanvasSelection(private val doc: InfiniteDocument) {
         val centre = from.center
         // Without a recorded grab, fall back to the grip's own direction, which is the box's local
         // up: that reduces to pointing up at the pointer.
-        val grab = startGrabAngle ?: (from.angle - Math.PI / 2.0)
+        val grab = startGrabAngle ?: (from.angle - PI / 2.0)
         return kotlin.math.atan2(pointer.y - centre.y, pointer.x - centre.x) - grab
     }
 

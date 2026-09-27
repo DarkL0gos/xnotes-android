@@ -24,8 +24,8 @@ object SvgColors {
     }
 
     private fun hex(h: String): Rgba? {
-        if (h.any { Character.digit(it, 16) < 0 }) return null
-        fun d(i: Int) = Character.digit(h[i], 16)
+        if (h.any { it.digitToIntOrNull(16) == null }) return null
+        fun d(i: Int) = h[i].digitToInt(16)
         return when (h.length) {
             3 -> Rgba(d(0) * 17, d(1) * 17, d(2) * 17)
             4 -> Rgba(d(0) * 17, d(1) * 17, d(2) * 17, d(3) * 17)

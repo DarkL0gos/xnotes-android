@@ -1,6 +1,5 @@
 package com.xnotes.canvas
 
-import com.xnotes.input.UiScheduler
 import com.xnotes.core.geometry.Pt
 import com.xnotes.core.geometry.Rect
 import com.xnotes.core.history.AddPageAuto
@@ -10,6 +9,7 @@ import com.xnotes.core.history.FlowEditParagraph
 import com.xnotes.core.history.History
 import com.xnotes.core.history.ParaSnapshot
 import com.xnotes.core.model.Page
+import com.xnotes.core.platform.Runnable
 import com.xnotes.core.text.CharStyle
 import com.xnotes.core.text.FlowEditor
 import com.xnotes.core.text.FlowFrame
@@ -19,6 +19,7 @@ import com.xnotes.core.text.FlowRange
 import com.xnotes.core.text.Paragraph
 import com.xnotes.core.text.TextFlow
 import com.xnotes.core.text.wordRangeAt
+import com.xnotes.input.UiScheduler
 import kotlin.math.abs
 
 /**

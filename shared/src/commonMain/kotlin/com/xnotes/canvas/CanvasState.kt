@@ -21,6 +21,8 @@ import com.xnotes.core.pal.Pen
 import com.xnotes.core.pal.RasterSurface
 import com.xnotes.core.pal.Renderer
 import com.xnotes.core.pal.SurfaceFactory
+import com.xnotes.core.platform.Lock
+import com.xnotes.core.platform.withLock
 import com.xnotes.core.stroke.StrokeGeometry
 import com.xnotes.core.tools.Tool
 import kotlin.math.abs
@@ -367,6 +369,9 @@ class CanvasState(
      * and it never came back, because nothing dropped it on scroll.
      */
     private val geomPages = HashSet<Page>()
+
+    /** Guards [geomPages], which cache threads add to while the UI thread sweeps it. */
+    private val geomLock = Lock()
 
     /**
      * Off-UI-thread plumbing for the *non-blocking* cache path ([cacheForOrSchedule] /
@@ -1044,7 +1049,7 @@ class CanvasState(
     /** Record that [page]'s strokes now hold ribbon geometry. Called from the cache threads too, so
      *  the set is synchronized; it is touched once per page build, never per item. */
     fun noteGeometryBuilt(page: Page) {
-        synchronized(geomPages) { geomPages.add(page) }
+        withLock(geomLock) { geomPages.add(page) }
     }
 
     /**
@@ -1056,7 +1061,7 @@ class CanvasState(
      * too would rebuild the whole ribbon just to hand back a rectangle.
      */
     fun releaseGeometryExcept(keep: Set<Page>) {
-        synchronized(geomPages) {
+        withLock(geomLock) {
             if (geomPages.isEmpty()) return
             val it = geomPages.iterator()
             while (it.hasNext()) {

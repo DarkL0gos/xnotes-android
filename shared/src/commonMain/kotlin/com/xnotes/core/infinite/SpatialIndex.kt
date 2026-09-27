@@ -2,7 +2,7 @@ package com.xnotes.core.infinite
 
 import com.xnotes.core.geometry.Rect
 import com.xnotes.core.model.CanvasItem
-import java.util.IdentityHashMap
+import com.xnotes.core.platform.identityMap
 import kotlin.math.ceil
 import kotlin.math.floor
 
@@ -24,7 +24,7 @@ class SpatialIndex(val cellSize: Double = DEFAULT_CELL_SIZE) {
     private val cells = HashMap<Long, MutableList<CanvasItem>>()
 
     /** Per-item cell span as `[x0, y0, x1, y1]` inclusive; absent for oversized and unfiled items. */
-    private val spans = IdentityHashMap<CanvasItem, IntArray>()
+    private val spans: MutableMap<CanvasItem, IntArray> = identityMap()
 
     private val oversized = ArrayList<CanvasItem>()
 
@@ -94,7 +94,7 @@ class SpatialIndex(val cellSize: Double = DEFAULT_CELL_SIZE) {
         val raw = ArrayList<CanvasItem>()
         queryRaw(rect, raw)
         if (raw.size < 2) return raw
-        val seen = IdentityHashMap<CanvasItem, Unit>(raw.size * 2)
+        val seen = identityMap<CanvasItem, Unit>(raw.size * 2)
         val out = ArrayList<CanvasItem>(raw.size)
         for (item in raw) if (seen.put(item, Unit) == null) out.add(item)
         return out

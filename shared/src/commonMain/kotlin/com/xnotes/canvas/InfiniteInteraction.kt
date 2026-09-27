@@ -1,12 +1,10 @@
 package com.xnotes.canvas
 
-import com.xnotes.input.FrameCallback
-import com.xnotes.input.PointerEvent
-import com.xnotes.input.UiScheduler
 import com.xnotes.core.geometry.Pt
-import com.xnotes.core.infinite.CanvasViewport
 import com.xnotes.core.geometry.Rect
+import com.xnotes.core.geometry.toRadians
 import com.xnotes.core.infinite.CanvasSelection
+import com.xnotes.core.infinite.CanvasViewport
 import com.xnotes.core.infinite.EraseSession
 import com.xnotes.core.infinite.LiftTransform
 import com.xnotes.core.infinite.OverlayTessellator
@@ -15,6 +13,8 @@ import com.xnotes.core.model.ImageItem
 import com.xnotes.core.model.Rgba
 import com.xnotes.core.model.ShapeItem
 import com.xnotes.core.model.Stroke
+import com.xnotes.core.platform.Runnable
+import com.xnotes.core.platform.monotonicNanos
 import com.xnotes.core.stroke.Sample
 import com.xnotes.core.stroke.ShapeRecognizer
 import com.xnotes.core.stroke.StrokeSimplify
@@ -24,6 +24,10 @@ import com.xnotes.core.tools.ShapeConfig
 import com.xnotes.core.tools.ShapeKind
 import com.xnotes.core.tools.Tool
 import com.xnotes.core.tools.ToolConfig
+import com.xnotes.input.FrameCallback
+import com.xnotes.input.PointerEvent
+import com.xnotes.input.UiScheduler
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.exp
@@ -899,11 +903,11 @@ class InfiniteInteraction(
         val dx = p.x - anchor.x
         val dy = p.y - anchor.y
         if (dx == 0.0 && dy == 0.0) return p
-        val snap = Math.toRadians(InteractionController.SHAPE_AXIS_SNAP_DEG)
+        val snap = toRadians(InteractionController.SHAPE_AXIS_SNAP_DEG)
         val fromHoriz = atan2(abs(dy), abs(dx)) // 0 is horizontal, PI/2 is vertical
         return when {
             fromHoriz <= snap -> Pt(p.x, anchor.y)
-            fromHoriz >= Math.PI / 2.0 - snap -> Pt(anchor.x, p.y)
+            fromHoriz >= PI / 2.0 - snap -> Pt(anchor.x, p.y)
             else -> p
         }
     }
@@ -1109,12 +1113,12 @@ class InfiniteInteraction(
     private fun startTrackingVelocity(vx: Double, vy: Double) {
         stopFling()
         lastPan = Pt(vx, vy)
-        lastMoveMs = System.nanoTime() / 1_000_000L
+        lastMoveMs = monotonicNanos() / 1_000_000L
         panVel = Pt.ZERO
     }
 
     private fun trackVelocity(vx: Double, vy: Double) {
-        val now = System.nanoTime() / 1_000_000L
+        val now = monotonicNanos() / 1_000_000L
         val dt = ((now - lastMoveMs).coerceAtLeast(1L)) / 1000.0
         val inst = Pt((vx - lastPan.x) / dt, (vy - lastPan.y) / dt)
         val k = InteractionController.VEL_SMOOTH
@@ -1127,7 +1131,7 @@ class InfiniteInteraction(
         setInteractive(true, true) // the glide is still motion, so the render thread stays up for it
         flingVel = fingerVel
         flinging = true
-        lastFlingMs = System.nanoTime() / 1_000_000L
+        lastFlingMs = monotonicNanos() / 1_000_000L
         scheduler.postFrameCallback(flingFrame)
     }
 

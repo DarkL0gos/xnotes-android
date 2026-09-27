@@ -1,5 +1,7 @@
 package com.xnotes.core.model
 
+import com.xnotes.core.platform.IdCounter
+
 /**
  * A single page (spec 02 §4). Z-order is list order: `items[0]` is at the back,
  * `items.last()` is on top. Pages are mutable and compared by **identity**.
@@ -23,8 +25,8 @@ class Page(
     val uid: Long = nextUid()
 
     companion object {
-        private val uidCounter = java.util.concurrent.atomic.AtomicLong(0L)
-        private fun nextUid(): Long = uidCounter.incrementAndGet()
+        private val uidCounter = IdCounter()
+        private fun nextUid(): Long = uidCounter.next()
 
         /** A blank page sized from a named size and orientation at [dpi]. */
         fun blank(size: PageSize, orientation: Orientation, dpi: Int): Page {

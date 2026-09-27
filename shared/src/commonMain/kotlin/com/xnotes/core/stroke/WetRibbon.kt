@@ -1,6 +1,7 @@
 package com.xnotes.core.stroke
 
 import com.xnotes.core.geometry.Rect
+import kotlin.concurrent.Volatile
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min

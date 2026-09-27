@@ -6,8 +6,8 @@ import com.xnotes.core.model.PagePattern
 import com.xnotes.core.model.PageSize
 import com.xnotes.core.model.PageStyle
 import com.xnotes.core.model.Rgba
+import com.xnotes.core.platform.identityMap
 import com.xnotes.core.util.Paths
-import java.util.IdentityHashMap
 
 /**
  * The infinite canvas background: one procedural ruling drawn straight in a fragment shader, with
@@ -80,7 +80,7 @@ class InfiniteDocument(
     val index = SpatialIndex()
 
     /** Lazily rebuilt map from item to z position, used to sort a culled query back into order. */
-    private var order: IdentityHashMap<CanvasItem, Int>? = null
+    private var order: MutableMap<CanvasItem, Int>? = null
 
     private var cachedContentBounds: Rect? = null
     private var contentBoundsValid = false
@@ -284,9 +284,9 @@ class InfiniteDocument(
         return acc
     }
 
-    private fun orderMap(): IdentityHashMap<CanvasItem, Int> {
+    private fun orderMap(): MutableMap<CanvasItem, Int> {
         order?.let { return it }
-        val map = IdentityHashMap<CanvasItem, Int>(backing.size * 2 + 1)
+        val map = identityMap<CanvasItem, Int>(backing.size * 2 + 1)
         for (i in backing.indices) map[backing[i]] = i
         order = map
         return map

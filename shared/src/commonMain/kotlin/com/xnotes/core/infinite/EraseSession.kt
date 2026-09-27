@@ -7,7 +7,7 @@ import com.xnotes.core.model.ImageItem
 import com.xnotes.core.model.ShapeItem
 import com.xnotes.core.model.Stroke
 import com.xnotes.core.model.TextItem
-import java.util.IdentityHashMap
+import com.xnotes.core.platform.identityMap
 
 /**
  * One eraser drag, from pen down to pen up.
@@ -32,10 +32,10 @@ class EraseSession(private val doc: InfiniteDocument) {
 
     /** Cut items in the order they were first touched, which is the order undo has to reverse. */
     private val entries = ArrayList<Entry>()
-    private val byOriginal = IdentityHashMap<CanvasItem, Entry>()
+    private val byOriginal: MutableMap<CanvasItem, Entry> = identityMap()
 
     /** Which original each live fragment came from, so a re-cut updates the right entry. */
-    private val originOf = IdentityHashMap<CanvasItem, CanvasItem>()
+    private val originOf: MutableMap<CanvasItem, CanvasItem> = identityMap()
 
     /** Whether the drag has cut anything at all. */
     val isEmpty: Boolean get() = entries.isEmpty()

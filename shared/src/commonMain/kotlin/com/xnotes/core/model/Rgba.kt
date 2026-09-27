@@ -52,6 +52,9 @@ data class Rgba(val r: Int, val g: Int, val b: Int, val a: Int = 255) {
             }
         }
 
-        fun toHex(c: Rgba): String = "#%02x%02x%02x".format(c.r, c.g, c.b)
+        fun toHex(c: Rgba): String = "#" + hex2(c.r) + hex2(c.g) + hex2(c.b)
+
+        /** `%02x`: lowercase hex, at least two digits, a negative value as its unsigned 32-bit form. */
+        private fun hex2(v: Int): String = v.toUInt().toString(16).padStart(2, '0')
     }
 }

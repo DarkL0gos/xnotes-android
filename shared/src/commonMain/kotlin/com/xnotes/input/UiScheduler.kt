@@ -1,5 +1,7 @@
 package com.xnotes.input
 
+import com.xnotes.core.platform.Runnable
+
 /** Called once on the next display frame with that frame's time in nanoseconds. */
 fun interface FrameCallback {
     fun doFrame(frameTimeNanos: Long)

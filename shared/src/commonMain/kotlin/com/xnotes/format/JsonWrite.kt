@@ -1,5 +1,6 @@
 package com.xnotes.format
 
+import com.xnotes.core.platform.roundHalfUp
 import java.io.Writer
 
 /**
@@ -122,7 +123,7 @@ internal class JsonWrite(private val out: Writer) {
         if (!v.isFinite() || v <= -1e7 || v >= 1e7) return -1
         var n = at
         buf[n++] = if (at == 0) '[' else ','
-        var k = Math.round(v * scale)
+        var k = roundHalfUp(v * scale)
         if (k < 0) {
             buf[n++] = '-'
             k = -k
@@ -178,7 +179,7 @@ internal class JsonWrite(private val out: Writer) {
     }
 
     private fun round(v: Double, scale: Double): Double =
-        if (v.isFinite()) Math.round(v * scale) / scale else v
+        if (v.isFinite()) roundHalfUp(v * scale) / scale else v
 
     private fun push() {
         if (depth == first.size) first = first.copyOf(depth * 2)
@@ -218,7 +219,7 @@ internal class JsonWrite(private val out: Writer) {
                 '\r' -> out.write("\\r")
                 '\u000C' -> out.write("\\f")
                 else -> if (c < ' ') {
-                    out.write(String.format(java.util.Locale.ROOT, "\\u%04x", c.code))
+                    out.write("\\u" + c.code.toString(16).padStart(4, '0'))
                 } else {
                     out.write(c.code)
                 }

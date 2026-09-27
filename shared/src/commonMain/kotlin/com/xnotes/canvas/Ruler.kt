@@ -2,7 +2,10 @@ package com.xnotes.canvas
 
 import com.xnotes.core.geometry.Geometry
 import com.xnotes.core.geometry.Pt
+import com.xnotes.core.geometry.toRadians
 import com.xnotes.core.model.PageSize
+import com.xnotes.core.platform.roundHalfUp
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
@@ -112,9 +115,9 @@ class Ruler {
          * (0/90/180/270) when within [AXIS_SNAP_DEG]; otherwise return it unchanged.
          */
         fun snapToAxes(raw: Double): Double {
-            val quarter = Math.PI / 2.0
-            val nearest = Math.round(raw / quarter) * quarter
-            return if (abs(raw - nearest) <= Math.toRadians(AXIS_SNAP_DEG)) nearest else raw
+            val quarter = PI / 2.0
+            val nearest = roundHalfUp(raw / quarter) * quarter
+            return if (abs(raw - nearest) <= toRadians(AXIS_SNAP_DEG)) nearest else raw
         }
     }
 }

@@ -14,6 +14,7 @@ import com.xnotes.core.stroke.StrokeGeometry
 import com.xnotes.core.stroke.WetRibbon
 import com.xnotes.core.tools.Tool
 import com.xnotes.core.tools.ToolConfig
+import kotlin.concurrent.Volatile
 
 /**
  * The unit of inking (spec 02 §5.1). Holds the raw samples plus a snapshot of

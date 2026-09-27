@@ -1,22 +1,20 @@
 package com.xnotes.canvas
 
-import com.xnotes.input.FrameCallback
-import com.xnotes.input.KeyCodes
-import com.xnotes.input.PointerEvent
-import com.xnotes.input.UiScheduler
 import com.xnotes.core.geometry.Affine
 import com.xnotes.core.geometry.Geometry
 import com.xnotes.core.geometry.Obb
 import com.xnotes.core.geometry.Pt
 import com.xnotes.core.geometry.Rect
+import com.xnotes.core.geometry.toDegrees
+import com.xnotes.core.geometry.toRadians
 import com.xnotes.core.history.AddItem
 import com.xnotes.core.history.AddItems
 import com.xnotes.core.history.Command
 import com.xnotes.core.history.CompositeCommand
+import com.xnotes.core.history.EditText
 import com.xnotes.core.history.EraseItems
 import com.xnotes.core.history.History
 import com.xnotes.core.history.LockItems
-import com.xnotes.core.history.EditText
 import com.xnotes.core.history.MoveItems
 import com.xnotes.core.history.ReorderItems
 import com.xnotes.core.history.ReplacePageItems
@@ -28,25 +26,28 @@ import com.xnotes.core.history.TransformItems
 import com.xnotes.core.model.CanvasItem
 import com.xnotes.core.model.Document
 import com.xnotes.core.model.DrawStyle
-import com.xnotes.core.model.deepCopy
 import com.xnotes.core.model.GeoHandle
+import com.xnotes.core.model.GeometrySnapshot
 import com.xnotes.core.model.ImageItem
 import com.xnotes.core.model.Page
 import com.xnotes.core.model.RectHandle
 import com.xnotes.core.model.Resizable
 import com.xnotes.core.model.Rgba
 import com.xnotes.core.model.ShapeHandle
-import com.xnotes.core.model.GeometrySnapshot
 import com.xnotes.core.model.ShapeItem
 import com.xnotes.core.model.Stroke
 import com.xnotes.core.model.TextHandle
 import com.xnotes.core.model.TextItem
 import com.xnotes.core.model.TextStyle
+import com.xnotes.core.model.deepCopy
 import com.xnotes.core.pal.FontFace
 import com.xnotes.core.pal.FontSpec
 import com.xnotes.core.pal.Pen
 import com.xnotes.core.pal.Renderer
 import com.xnotes.core.pal.TextMeasurer
+import com.xnotes.core.platform.Runnable
+import com.xnotes.core.platform.formatDecimal
+import com.xnotes.core.platform.monotonicNanos
 import com.xnotes.core.stroke.RecognizedShape
 import com.xnotes.core.stroke.Sample
 import com.xnotes.core.stroke.ShapeRecognizer
@@ -58,10 +59,17 @@ import com.xnotes.core.tools.ShapeKind
 import com.xnotes.core.tools.Tool
 import com.xnotes.core.tools.ToolConfig
 import com.xnotes.core.tools.ToolDefaults
+import com.xnotes.input.FrameCallback
+import com.xnotes.input.KeyCodes
+import com.xnotes.input.PointerEvent
+import com.xnotes.input.UiScheduler
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
+import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.exp
+import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
@@ -1708,11 +1716,11 @@ class InteractionController(
         val dx = p.x - anchor.x
         val dy = p.y - anchor.y
         if (dx == 0.0 && dy == 0.0) return p
-        val snap = Math.toRadians(SHAPE_AXIS_SNAP_DEG)
+        val snap = toRadians(SHAPE_AXIS_SNAP_DEG)
         val fromHoriz = atan2(abs(dy), abs(dx)) // 0 = horizontal, PI/2 = vertical
         return when {
             fromHoriz <= snap -> Pt(p.x, anchor.y)
-            fromHoriz >= Math.PI / 2.0 - snap -> Pt(anchor.x, p.y)
+            fromHoriz >= PI / 2.0 - snap -> Pt(anchor.x, p.y)
             else -> p
         }
     }
@@ -2532,12 +2540,12 @@ class InteractionController(
     private fun startTrackingVelocity(vx: Double, vy: Double) {
         stopFling()
         lastPan = Pt(vx, vy)
-        lastMoveMs = System.nanoTime() / 1_000_000L
+        lastMoveMs = monotonicNanos() / 1_000_000L
         panVel = Pt.ZERO
     }
 
     private fun trackVelocity(vx: Double, vy: Double) {
-        val now = System.nanoTime() / 1_000_000L
+        val now = monotonicNanos() / 1_000_000L
         val dt = ((now - lastMoveMs).coerceAtLeast(1L)) / 1000.0
         val inst = Pt((vx - lastPan.x) / dt, (vy - lastPan.y) / dt)
         panVel = Pt(panVel.x * VEL_SMOOTH + inst.x * (1 - VEL_SMOOTH), panVel.y * VEL_SMOOTH + inst.y * (1 - VEL_SMOOTH))
@@ -2553,7 +2561,7 @@ class InteractionController(
         if (fingerVel.length() < FLING_MIN_START) return
         flingVel = Pt(-fingerVel.x, -fingerVel.y) // scroll moves opposite the finger
         flinging = true
-        lastFlingMs = System.nanoTime() / 1_000_000L
+        lastFlingMs = monotonicNanos() / 1_000_000L
         scheduler.postFrameCallback(flingFrame)
     }
 
@@ -2614,7 +2622,7 @@ class InteractionController(
         }
         fading = true
         fadeAlpha = 1.0
-        fadeStartMs = System.nanoTime() / 1_000_000L
+        fadeStartMs = monotonicNanos() / 1_000_000L
         scheduler.postFrameCallback(fadeFrame)
     }
 
@@ -2651,7 +2659,7 @@ class InteractionController(
         overscrollArmed = false
         if (!overscrollSettling) {
             overscrollSettling = true
-            lastOverscrollMs = System.nanoTime() / 1_000_000L
+            lastOverscrollMs = monotonicNanos() / 1_000_000L
             scheduler.postFrameCallback(overscrollFrame)
         }
     }
@@ -3067,7 +3075,7 @@ class InteractionController(
             val pen = snapPenViewport
             if (a != null && b != null && pen != null) {
                 val cm = RulerMath.viewportLenToCm(a.distanceTo(b), state.zoom, document.dpi)
-                drawReadout(r, "%.1f cm".format(cm), pen + Pt(30.0, -30.0) * density, density, pal)
+                drawReadout(r, formatDecimal(cm, 1) + " cm", pen + Pt(30.0, -30.0) * density, density, pal)
             }
         }
     }
@@ -3079,7 +3087,7 @@ class InteractionController(
         val radius = ruler.handleRadiusPx()
         // Readings are tied to the handle (not the screen side) so they never swap as the ruler turns:
         // the +direction handle reads counter-clockwise from +x, the −direction handle clockwise from −x.
-        val phi = Math.toDegrees(atan2(ruler.direction().y, ruler.direction().x))
+        val phi = toDegrees(atan2(ruler.direction().y, ruler.direction().x))
         val ccwFromPlusX = ((-phi) % 360 + 360) % 360
         val cwFromMinusX = (phi % 360 + 360) % 360
         val handles = ruler.handleCenters(dist)
@@ -3091,7 +3099,7 @@ class InteractionController(
             r.strokePolyline(arcPolyline(h, radius * 0.5, 205.0, 335.0, 10), Pen(pal.textDim, 1.3, cosmetic = true))
             val deg = if (i == 0) ccwFromPlusX else cwFromMinusX
             val outward = (h - ruler.center).normalized()
-            drawReadout(r, "%.0f°".format(deg), h + outward * (radius + 28.0 * density), density, pal)
+            drawReadout(r, formatDecimal(deg, 0) + "°", h + outward * (radius + 28.0 * density), density, pal)
         }
     }
 
@@ -3109,8 +3117,8 @@ class InteractionController(
         val unitPx = if (showMinor) cmPx / 10.0 else cmPx
         val unitsPerLabel = if (showMinor) 10 else 1
         val step = if (showMinor || cmPx >= 12.0) 1 else 5 // crowd guard when zoomed far out
-        var j = Math.ceil(sMin / unitPx).toInt()
-        val jMax = Math.floor(sMax / unitPx).toInt()
+        var j = ceil(sMin / unitPx).toInt()
+        val jMax = floor(sMax / unitPx).toInt()
         while (j <= jMax) {
             if (step == 1 || j % step == 0) {
                 val mid = ruler.center + d * (j * unitPx)
@@ -3169,7 +3177,7 @@ class InteractionController(
     private fun arcPolyline(center: Pt, radius: Double, startDeg: Double, endDeg: Double, segments: Int): List<Pt> {
         val pts = ArrayList<Pt>(segments + 1)
         for (i in 0..segments) {
-            val t = Math.toRadians(startDeg + (endDeg - startDeg) * i / segments)
+            val t = toRadians(startDeg + (endDeg - startDeg) * i / segments)
             pts.add(Pt(center.x + radius * cos(t), center.y + radius * sin(t)))
         }
         return pts

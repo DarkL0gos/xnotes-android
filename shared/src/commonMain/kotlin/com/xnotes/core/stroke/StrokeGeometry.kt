@@ -1,6 +1,7 @@
 package com.xnotes.core.stroke
 
 import com.xnotes.core.geometry.Pt
+import kotlin.concurrent.Volatile
 
 /**
  * One captured stylus point, page-local; `pressure` in `[0, 1]`. [t] is the
