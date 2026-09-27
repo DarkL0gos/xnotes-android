@@ -1,5 +1,6 @@
 package com.xnotes.format
 
+import com.xnotes.core.platform.javaDoubleToString
 import com.xnotes.core.platform.roundHalfUp
 
 /**
@@ -201,7 +202,7 @@ internal class JsonWrite(private val out: CharSink) {
         require(!v.isNaN() && !v.isInfinite()) { "Forbidden numeric value: $v" }
         if (v == 0.0 && 1.0 / v < 0) return "-0"
         val l = v.toLong()
-        return if (l.toDouble() == v) l.toString() else v.toString()
+        return if (l.toDouble() == v) l.toString() else javaDoubleToString(v)
     }
 
     private fun string(s: String) {

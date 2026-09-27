@@ -19,3 +19,5 @@ actual class IdCounter actual constructor() {
 
     actual fun next(): Long = value.incrementAndGet()
 }
+
+actual fun javaDoubleToString(v: Double): String = v.toString()

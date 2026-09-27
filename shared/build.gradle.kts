@@ -16,6 +16,9 @@ kotlin {
         commonMain.dependencies {
             implementation("com.squareup.okio:okio:3.10.2")
         }
+        nativeTest.dependencies {
+            implementation(kotlin("test"))
+        }
         jvmTest.dependencies {
             implementation("junit:junit:4.13.2")
             implementation("org.json:json:20240303")
