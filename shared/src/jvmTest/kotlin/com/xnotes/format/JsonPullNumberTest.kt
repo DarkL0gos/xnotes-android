@@ -3,7 +3,6 @@ package com.xnotes.format
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.io.StringReader
 import kotlin.random.Random
 
 /**
@@ -15,7 +14,7 @@ import kotlin.random.Random
 class JsonPullNumberTest {
 
     private fun parse(text: String): List<Double> {
-        val p = JsonPull(StringReader(text))
+        val p = JsonPull(stringSource(text))
         val out = mutableListOf<Double>()
         p.beginArray()
         while (p.hasNext()) out += p.nextDouble()
@@ -66,7 +65,7 @@ class JsonPullNumberTest {
     }
 
     private fun samples(text: String): List<List<Double>> {
-        val p = JsonPull(StringReader(text))
+        val p = JsonPull(stringSource(text))
         val out = mutableListOf<List<Double>>()
         val tuple = DoubleArray(4)
         p.beginArray()

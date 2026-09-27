@@ -12,6 +12,10 @@ kotlin {
     linuxX64()
 
     sourceSets {
+        // File IO, streams and hashing for common code (java.io / java.nio have no native twin).
+        commonMain.dependencies {
+            implementation("com.squareup.okio:okio:3.10.2")
+        }
         jvmTest.dependencies {
             implementation("junit:junit:4.13.2")
             implementation("org.json:json:20240303")

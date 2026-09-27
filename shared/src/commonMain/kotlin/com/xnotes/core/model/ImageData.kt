@@ -1,6 +1,7 @@
 package com.xnotes.core.model
 
-import java.io.File
+import com.xnotes.core.platform.File
+
 
 /**
  * The immutable source of an [ImageItem]: the encoded image [file] on disk plus its native pixel

@@ -2,7 +2,6 @@ package com.xnotes.format
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
-import java.io.StringWriter
 import kotlin.random.Random
 
 /**
@@ -17,7 +16,7 @@ class JsonWriteSampleTest {
 
     /** What the writer emitted before [JsonWrite.samplePoint] existed. */
     private fun reference(x: Double, y: Double, p: Double, t: Double?): String {
-        val w = StringWriter()
+        val w = StringCharSink()
         val j = JsonWrite(w)
         j.beginArray()
         j.beginArray().value(round(x, 100.0)).value(round(y, 100.0)).value(round(p, 1000.0))
@@ -28,7 +27,7 @@ class JsonWriteSampleTest {
     }
 
     private fun fast(x: Double, y: Double, p: Double, t: Double?): String {
-        val w = StringWriter()
+        val w = StringCharSink()
         val j = JsonWrite(w)
         j.beginArray()
         j.samplePoint(x, y, p, t)
@@ -84,7 +83,7 @@ class JsonWriteSampleTest {
     }
 
     @Test fun consecutiveSamplesAreComma() {
-        val w = StringWriter()
+        val w = StringCharSink()
         val j = JsonWrite(w)
         j.beginArray()
         j.samplePoint(1.0, 2.0, 0.5, null)
@@ -95,7 +94,7 @@ class JsonWriteSampleTest {
 
     /** A named array of samples: the shape both codecs actually write. */
     @Test fun itNestsUnderANameLikeTheCodecsUseIt() {
-        val w = StringWriter()
+        val w = StringCharSink()
         val j = JsonWrite(w)
         j.beginObject()
         j.name("samples").beginArray()

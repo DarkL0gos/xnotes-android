@@ -1,7 +1,6 @@
 package com.xnotes.format
 
 import com.xnotes.core.platform.roundHalfUp
-import java.io.Writer
 
 /**
  * Minimal streaming JSON writer, the write-side twin of [JsonPull]. Emits the same
@@ -10,7 +9,7 @@ import java.io.Writer
  * byte-identical to one the old path wrote, without ever materializing the DOM
  * or the whole manifest string.
  */
-internal class JsonWrite(private val out: Writer) {
+internal class JsonWrite(private val out: CharSink) {
 
     private var first = BooleanArray(32)
     private var depth = 0

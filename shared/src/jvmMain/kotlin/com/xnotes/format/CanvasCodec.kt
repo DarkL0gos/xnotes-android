@@ -15,18 +15,17 @@ import com.xnotes.core.model.Rgba
 import com.xnotes.core.model.ShapeItem
 import com.xnotes.core.model.Stroke
 import com.xnotes.core.pal.ImageCodec
+import com.xnotes.core.platform.File
+import com.xnotes.core.platform.InputStream
+import com.xnotes.core.platform.OutputStream
 import com.xnotes.core.stroke.Sample
 import com.xnotes.core.tools.ShapeKind
 import com.xnotes.core.tools.Tool
 import com.xnotes.core.tools.ToolConfig
 import com.xnotes.core.tools.ToolDefaults
 import com.xnotes.core.util.Svg
-import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.io.InputStream
-import java.io.InputStreamReader
-import java.io.OutputStream
 import java.util.zip.CRC32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
@@ -70,7 +69,7 @@ class CanvasCodec(private val imageCodec: ImageCodec) {
             // The manifest streams straight into the deflater, so a dense canvas's JSON is never
             // materialized as a DOM, a String, or a byte[].
             zos.putNextEntry(ZipEntry("manifest.json").apply { method = ZipEntry.DEFLATED })
-            val w = java.io.BufferedWriter(java.io.OutputStreamWriter(zos, Charsets.UTF_8), 32 * 1024)
+            val w = utf8Writer(zos)
             writeManifest(JsonWrite(w), doc, assets)
             w.flush()
             zos.closeEntry()
@@ -291,7 +290,7 @@ class CanvasCodec(private val imageCodec: ImageCodec) {
                         // materialized as bytes, a String, or a DOM.
                         if (manifest == null) {
                             manifest = try {
-                                parseManifest(JsonPull(InputStreamReader(zis, Charsets.UTF_8)))
+                                parseManifest(JsonPull(utf8Reader(zis)))
                             } catch (_: JsonPullException) {
                                 throw XCanvasFormatException(NOT_XCANVAS)
                             }
@@ -354,7 +353,7 @@ class CanvasCodec(private val imageCodec: ImageCodec) {
 
     /** The header fields of manifest [json], stopping at the items; null when it isn't a canvas's. */
     fun peekManifest(json: InputStream): CanvasPeek? {
-        val p = JsonPull(InputStreamReader(json, Charsets.UTF_8))
+        val p = JsonPull(utf8Reader(json))
         var isCanvas = false
         var created: Long? = null
         p.beginObject()

@@ -14,7 +14,9 @@ import com.xnotes.core.model.Rgba
 import com.xnotes.core.model.ShapeItem
 import com.xnotes.core.model.Stroke
 import com.xnotes.core.platform.Runnable
+import com.xnotes.core.platform.fileOf
 import com.xnotes.core.platform.monotonicNanos
+import com.xnotes.core.platform.pathString
 import com.xnotes.core.stroke.Sample
 import com.xnotes.core.stroke.ShapeRecognizer
 import com.xnotes.core.stroke.StrokeSimplify
@@ -54,7 +56,7 @@ class InfiniteInteraction(
     /** The UI thread's timers: long press, shape dwell and fling frames. */
     private val scheduler: UiScheduler,
     /** Whether the image file at a path is vector (SVG); hosts may pass a memoized check. */
-    private val isVectorFile: (String) -> Boolean = { com.xnotes.core.util.Svg.isSvgFile(java.io.File(it)) },
+    private val isVectorFile: (String) -> Boolean = { com.xnotes.core.util.Svg.isSvgFile(fileOf(it)) },
     /** Called whenever the view moved, so the host can refresh a zoom readout or schedule a save. */
     private val onViewChanged: () -> Unit = {},
     /** True while a gesture or a glide is live, so the renderer can keep drawing every refresh. */
@@ -782,7 +784,7 @@ class InfiniteInteraction(
     }
 
     private fun isVectorImage(item: CanvasItem): Boolean =
-        item is ImageItem && isVectorFile(item.image.file.path)
+        item is ImageItem && isVectorFile(item.image.file.pathString)
 
     /**
      * A resize in progress. The model is left alone and the renderer is handed the map, so a handle

@@ -1,5 +1,6 @@
 package com.xnotes.core.model
 
+import com.xnotes.core.platform.File
 import com.xnotes.core.text.TextFlow
 import com.xnotes.core.util.Paths
 
@@ -23,7 +24,7 @@ class Document(
      * into/out of the `.xnote` bundle, so even a very large PDF never has to fit in the heap. The
      * file lives in a private cache dir owned by the platform layer (which manages its lifetime).
      */
-    var pdfFile: java.io.File? = null,
+    var pdfFile: File? = null,
     val bookmarks: MutableList<Bookmark> = mutableListOf(),
     /** Document-wide ("all pages") style override; per-page [Page.style] layers on top. */
     var style: PageStyle = PageStyle(),

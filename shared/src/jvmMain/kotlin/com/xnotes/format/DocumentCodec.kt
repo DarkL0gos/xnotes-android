@@ -9,9 +9,9 @@ import com.xnotes.core.model.ImageData
 import com.xnotes.core.model.ImageItem
 import com.xnotes.core.model.Orientation
 import com.xnotes.core.model.Page
+import com.xnotes.core.model.PageMargins
 import com.xnotes.core.model.PagePattern
 import com.xnotes.core.model.PageSize
-import com.xnotes.core.model.PageMargins
 import com.xnotes.core.model.PageStyle
 import com.xnotes.core.model.Rgba
 import com.xnotes.core.model.ShapeItem
@@ -20,6 +20,9 @@ import com.xnotes.core.model.TextItem
 import com.xnotes.core.pal.FontFace
 import com.xnotes.core.pal.ImageCodec
 import com.xnotes.core.pal.TextMeasurer
+import com.xnotes.core.platform.File
+import com.xnotes.core.platform.InputStream
+import com.xnotes.core.platform.OutputStream
 import com.xnotes.core.stroke.Sample
 import com.xnotes.core.stroke.StrokeSimplify
 import com.xnotes.core.tools.ShapeKind
@@ -27,12 +30,8 @@ import com.xnotes.core.tools.Tool
 import com.xnotes.core.tools.ToolConfig
 import com.xnotes.core.tools.ToolDefaults
 import com.xnotes.core.util.Svg
-import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.io.InputStream
-import java.io.InputStreamReader
-import java.io.OutputStream
 import java.util.zip.CRC32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
@@ -183,7 +182,7 @@ class DocumentCodec(
         // materialized as an org.json DOM, a String, or a byte[] (three copies per save).
         zos.putNextEntry(ZipEntry("manifest.json").apply { method = ZipEntry.DEFLATED })
         val probe = DeflateProbe(zos)
-        val w = java.io.BufferedWriter(java.io.OutputStreamWriter(probe, Charsets.UTF_8), 32 * 1024)
+        val w = utf8Writer(probe)
         writeManifest(JsonWrite(w), doc, assets)
         w.flush()
         zos.closeEntry()
@@ -448,7 +447,7 @@ class DocumentCodec(
                             val probe = InflateProbe(zis)
                             val started = System.nanoTime()
                             manifest = try {
-                                parseManifest(JsonPull(InputStreamReader(probe, Charsets.UTF_8)))
+                                parseManifest(JsonPull(utf8Reader(probe)))
                             } catch (_: JsonPullException) {
                                 throw XNoteFormatException(NOT_XNOTE)
                             }
@@ -590,7 +589,7 @@ class DocumentCodec(
 
     /** The header fields and the page count of manifest [json], skipping every page's contents; null when it isn't a note's. */
     fun peekManifest(json: InputStream): NotePeek? {
-        val p = JsonPull(InputStreamReader(json, Charsets.UTF_8))
+        val p = JsonPull(utf8Reader(json))
         var isNote = false
         var hasPdf = false
         var created: Long? = null

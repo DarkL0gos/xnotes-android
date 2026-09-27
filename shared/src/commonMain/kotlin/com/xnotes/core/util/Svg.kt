@@ -1,6 +1,11 @@
 package com.xnotes.core.util
 
-import java.io.File
+import com.xnotes.core.platform.File
+import com.xnotes.core.platform.asPath
+import okio.FileSystem
+import okio.buffer
+import okio.use
+
 
 /**
  * Sniffs whether a file holds SVG markup. Every raster image format opens with a binary magic
@@ -9,7 +14,7 @@ import java.io.File
  */
 object Svg {
     fun isSvgFile(file: File): Boolean = runCatching {
-        file.inputStream().use { input ->
+        FileSystem.SYSTEM.source(file.asPath()).buffer().use { input ->
             val head = ByteArray(64)
             val n = input.read(head)
             var i = 0

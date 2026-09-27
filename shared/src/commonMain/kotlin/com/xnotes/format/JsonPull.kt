@@ -1,6 +1,5 @@
 package com.xnotes.format
 
-import java.io.Reader
 
 /** Thrown when the stream is not well-formed JSON. */
 internal class JsonPullException(message: String) : Exception(message)
@@ -11,7 +10,7 @@ internal class JsonPullException(message: String) : Exception(message)
  * straight off the zip stream: the old org.json DOM held a boxed wrapper for every
  * number, which cost a 58 MB manifest ~150 MB of heap and tens of seconds to open.
  */
-internal class JsonPull(private val reader: Reader) {
+internal class JsonPull(private val reader: CharSource) {
 
     enum class Token { BEGIN_OBJECT, END_OBJECT, BEGIN_ARRAY, END_ARRAY, NAME, STRING, NUMBER, BOOLEAN, NULL, END_DOCUMENT }
 
@@ -367,7 +366,7 @@ internal class JsonPull(private val reader: Reader) {
                 if (c == '"' || c == '\\') break
                 i++
             }
-            sb.append(buf, pos, i - pos)
+            sb.appendRange(buf, pos, pos + (i - pos))
             pos = i
             if (pos < limit) {
                 if (buf[pos] == '"') {
@@ -413,7 +412,7 @@ internal class JsonPull(private val reader: Reader) {
         while (true) {
             var i = pos
             while (i < limit && isNumberChar(buf[i])) i++
-            sb.append(buf, pos, i - pos)
+            sb.appendRange(buf, pos, pos + (i - pos))
             pos = i
             if (i < limit || !ensure()) break
         }
@@ -426,7 +425,14 @@ internal class JsonPull(private val reader: Reader) {
         private const val MAX_EXACT_MANTISSA = 9007199254740992L
 
         /** Powers of ten that are themselves exact doubles; past 1e22 they are not. */
-        private val POW10 = DoubleArray(23) { java.math.BigDecimal.TEN.pow(it).toDouble() }
+        private val POW10 = DoubleArray(23).also { p ->
+            // Every product is an exact integer below 2^53 * 2^22, so this is exact like BigDecimal was.
+            var v = 1.0
+            for (i in p.indices) {
+                p[i] = v
+                v *= 10.0
+            }
+        }
     }
 
     private fun isNumberChar(c: Char): Boolean =

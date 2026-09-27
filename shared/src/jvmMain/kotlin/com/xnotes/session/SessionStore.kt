@@ -6,6 +6,8 @@ import com.xnotes.format.CanvasCodec
 import com.xnotes.format.DocumentCodec
 import com.xnotes.format.JsonPull
 import com.xnotes.format.JsonWrite
+import com.xnotes.format.utf8Reader
+import com.xnotes.format.utf8Writer
 import java.io.File
 import java.io.OutputStream
 import java.nio.channels.FileChannel
@@ -161,7 +163,7 @@ class SessionStore(
     }
 
     private fun writeMeta(meta: Meta, out: OutputStream) {
-        val writer = out.bufferedWriter(Charsets.UTF_8)
+        val writer = utf8Writer(out)
         JsonWrite(writer).apply {
             beginObject()
             name("version").value(1)
@@ -180,8 +182,8 @@ class SessionStore(
 
     private fun readMeta(): Meta? = runCatching {
         if (!metaFile.isFile) return null
-        metaFile.bufferedReader(Charsets.UTF_8).use { reader ->
-            val json = JsonPull(reader)
+        metaFile.inputStream().buffered().use { input ->
+            val json = JsonPull(utf8Reader(input))
             var kind: Kind? = null
             var file: String? = null
             var path: String? = null
