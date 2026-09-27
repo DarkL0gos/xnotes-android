@@ -9,7 +9,10 @@ kotlin {
         }
     }
     // Compiling for a native target keeps commonMain honest: JVM-only API there fails the build.
-    linuxX64()
+    linuxX64 {
+        // An optimized test binary too (linuxX64ReleaseTest), for measurements like the pen benchmark.
+        binaries.test(listOf(org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType.RELEASE))
+    }
 
     sourceSets {
         // File IO, streams and hashing for common code (java.io / java.nio have no native twin).
