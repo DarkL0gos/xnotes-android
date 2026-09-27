@@ -2,6 +2,9 @@ package com.xnotes
 
 import com.xnotes.core.doubleCorpus
 import com.xnotes.core.platform.javaDoubleToString
+import com.xnotes.format.JsonPull
+import com.xnotes.format.Utf8CharSource
+import okio.Buffer
 import okio.ByteString.Companion.encodeUtf8
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -15,6 +18,18 @@ class DoubleTextTest {
     @Test fun formatsTheCorpusExactlyAsTheJdk() {
         val text = doubleCorpus().joinToString("\n") { javaDoubleToString(it) }
         assertEquals(JDK_DIGEST, text.encodeUtf8().sha256().hex())
+    }
+
+    @Test fun theManifestReaderReadsEveryValueBack() {
+        val values = doubleCorpus()
+        val json = values.joinToString(",", "[", "]") { javaDoubleToString(it) }
+        val p = JsonPull(Utf8CharSource(Buffer().writeUtf8(json)))
+        p.beginArray()
+        for ((i, v) in values.withIndex()) {
+            val back = p.nextDouble()
+            assertEquals(v.toRawBits(), back.toRawBits(), "#$i ${javaDoubleToString(v)} read as ${javaDoubleToString(back)}")
+        }
+        p.endArray()
     }
 
     @Test fun layoutMatchesTheJdk() {
