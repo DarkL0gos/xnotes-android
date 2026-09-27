@@ -140,7 +140,7 @@ class DocumentCodec(
         // The flow lives in its own ODF entry, written only when non-empty (or carrying
         // custom defaults) so untouched notes stay byte-identical to old readers.
         if (!doc.flow.isEmpty || !com.xnotes.core.text.FlowDefaults.of(doc.flow).isEmpty) {
-            zos.putDeflated(FLOW_ENTRY_NAME, FlowFormat.write(doc.flow))
+            zos.putDeflated(FlowXml.ENTRY_NAME, FlowXml.write(doc.flow))
         }
         // The manifest streams straight into the deflater: a dense note's JSON is never
         // materialized as an org.json DOM, a String, or a byte[] (three copies per save).
@@ -437,7 +437,7 @@ class DocumentCodec(
                             imageFiles[name] = f
                             timing?.assetsMs += (monotonicNanos() - started) / 1_000_000L
                         }
-                    } else if (name == FLOW_ENTRY_NAME) {
+                    } else if (name == FlowXml.ENTRY_NAME) {
                         flowBytes = readRemaining(zis)
                     }
                     // Anything else is an asset from a newer version: skipped, never buffered.
@@ -462,7 +462,7 @@ class DocumentCodec(
         }
 
         doc.bookmarks.addAll(m.bookmarks)
-        flowBytes?.let { FlowFormat.readInto(doc.flow, it) }
+        flowBytes?.let { FlowXml.readInto(doc.flow, it) }
 
         if (m.pages.isEmpty()) {
             doc.pages.add(Page.blank(PageSize.A4, Orientation.PORTRAIT, m.dpi))

@@ -16,14 +16,10 @@ import com.xnotes.core.vector.VectorPaint
 import com.xnotes.core.vector.VectorPath
 import com.xnotes.core.vector.VectorScene
 import com.xnotes.core.vector.VectorSeg
-import java.io.ByteArrayInputStream
-import javax.xml.parsers.DocumentBuilderFactory
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.tan
-import org.w3c.dom.Element
-import org.w3c.dom.Node
 
 /**
  * Reads an SVG file into a [VectorScene]: paths in paint order, every transform already applied.
@@ -44,28 +40,19 @@ object SvgReader {
      * named as unsupported and left out, which is what keeps this parser testable off-device.
      */
     fun parse(bytes: ByteArray, glyphs: GlyphOutliner? = null): VectorScene {
-        val root = runCatching {
-            DocumentBuilderFactory.newInstance()
-                .apply {
-                    isNamespaceAware = true
-                    runCatching { setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false) }
-                    runCatching { isExpandEntityReferences = false }
-                }
-                .newDocumentBuilder()
-                .parse(ByteArrayInputStream(bytes))
-                .documentElement
-        }.getOrNull() ?: return VectorScene.EMPTY
+        // Never fetches a DTD or an external entity; see XmlParser.
+        val root = runCatching { XmlParser.parse(bytes) }.getOrNull() ?: return VectorScene.EMPTY
         if (localName(root) != "svg") return VectorScene.EMPTY
         return Reader(root, glyphs).read()
     }
 
     // --- the walk ---
 
-    private class Reader(private val root: Element, private val glyphs: GlyphOutliner?) {
+    private class Reader(private val root: XmlElement, private val glyphs: GlyphOutliner?) {
 
         private val paths = ArrayList<VectorPath>()
         private val skipped = LinkedHashSet<String>()
-        private val byId = HashMap<String, Element>()
+        private val byId = HashMap<String, XmlElement>()
         private val css = CssRules()
         private var used = 0
         private var useDepth = 0
@@ -95,8 +82,8 @@ object SvgReader {
         }
 
         /** Every element carrying an id, so `use` and `clip-path` can find their target. */
-        private fun index(el: Element) {
-            attr(el, "id")?.let { byId.putIfAbsent(it, el) }
+        private fun index(el: XmlElement) {
+            attr(el, "id")?.let { if (it !in byId) byId[it] = el } // the first element with an id wins
             for (child in children(el)) index(child)
         }
 
@@ -121,7 +108,7 @@ object SvgReader {
                 .times(Affine.translate(-vb.left, -vb.top))
         }
 
-        private fun walk(el: Element, parentCtm: Affine, parentStyle: Style) {
+        private fun walk(el: XmlElement, parentCtm: Affine, parentStyle: Style) {
             for (child in children(el)) {
                 if (paths.size >= MAX_PATHS) {
                     skipped.add("more than $MAX_PATHS paths")
@@ -131,7 +118,7 @@ object SvgReader {
             }
         }
 
-        private fun visit(el: Element, parentCtm: Affine, parentStyle: Style) {
+        private fun visit(el: XmlElement, parentCtm: Affine, parentStyle: Style) {
             val name = localName(el)
             if (name in NEVER_DRAWN) return
             val inherited = parentStyle.inherit(el, css)
@@ -167,7 +154,7 @@ object SvgReader {
          * `defs`, which is never walked. The element still draws, unfiltered and unmasked, because
          * losing a drop shadow is a far smaller loss than losing the card it sits under.
          */
-        private fun nameUnbuilt(el: Element, name: String) {
+        private fun nameUnbuilt(el: XmlElement, name: String) {
             if (property(el, "filter") != null) skipped.add("filter")
             if (property(el, "mask") != null) skipped.add("mask")
             // Opacity on a group has to composite the whole subtree once. Applying it per shape
@@ -181,11 +168,11 @@ object SvgReader {
         }
 
         /** A property from the element's own `style` attribute, else its presentation attribute. */
-        private fun property(el: Element, name: String): String? =
+        private fun property(el: XmlElement, name: String): String? =
             Style.inlineStyle(attr(el, "style"))[name] ?: attr(el, name)
 
         /** `use` draws its target again, offset by x/y, under the referring element's own style. */
-        private fun expandUse(el: Element, ctm: Affine, style: Style) {
+        private fun expandUse(el: XmlElement, ctm: Affine, style: Style) {
             // A file can point a `use` at its own ancestor; the depth cap is what stops that
             // recursing forever, and the total cap stops a legal but enormous expansion.
             if (useDepth >= MAX_USE_DEPTH || used >= MAX_USE_EXPANSIONS) {
@@ -209,7 +196,7 @@ object SvgReader {
 
         // --- shapes ---
 
-        private fun rect(el: Element): List<VectorContour> {
+        private fun rect(el: XmlElement): List<VectorContour> {
             val x = length(attr(el, "x"), 0.0)
             val y = length(attr(el, "y"), 0.0)
             val w = length(attr(el, "width"), 0.0)
@@ -263,7 +250,7 @@ object SvgReader {
             to,
         )
 
-        private fun ellipse(el: Element, rxName: String, ryName: String): List<VectorContour> {
+        private fun ellipse(el: XmlElement, rxName: String, ryName: String): List<VectorContour> {
             val cx = length(attr(el, "cx"), 0.0)
             val cy = length(attr(el, "cy"), 0.0)
             val rx = length(attr(el, rxName), 0.0)
@@ -280,13 +267,13 @@ object SvgReader {
             return listOf(VectorContour(Pt(cx + rx, cy), segs, closed = true))
         }
 
-        private fun line(el: Element): List<VectorContour> {
+        private fun line(el: XmlElement): List<VectorContour> {
             val a = Pt(length(attr(el, "x1"), 0.0), length(attr(el, "y1"), 0.0))
             val b = Pt(length(attr(el, "x2"), 0.0), length(attr(el, "y2"), 0.0))
             return listOf(VectorContour(a, listOf(VectorSeg.Line(b)), closed = false))
         }
 
-        private fun poly(el: Element, close: Boolean): List<VectorContour> {
+        private fun poly(el: XmlElement, close: Boolean): List<VectorContour> {
             val n = numbers(attr(el, "points"))
             if (n.size < 4) return emptyList()
             val pts = ArrayList<Pt>(n.size / 2)
@@ -338,7 +325,7 @@ object SvgReader {
          * relative positions, nested `tspan`s, and `text-anchor` per chunk, which is what a diagram
          * label uses. Anything beyond that is named rather than guessed at.
          */
-        private fun emitText(el: Element, ctm: Affine, style: Style) {
+        private fun emitText(el: XmlElement, ctm: Affine, style: Style) {
             val outliner = glyphs ?: run {
                 skipped.add("text")
                 return
@@ -379,16 +366,14 @@ object SvgReader {
             val runs = ArrayList<TextRun>()
         }
 
-        private fun gather(el: Element, parentStyle: Style, cursor: Cursor, chunks: MutableList<Chunk>) {
-            val kids = el.childNodes
-            for (i in 0 until kids.length) {
-                val node = kids.item(i)
-                if (node.nodeType == Node.TEXT_NODE || node.nodeType == Node.CDATA_SECTION_NODE) {
-                    val text = collapse(node.nodeValue ?: "")
+        private fun gather(el: XmlElement, parentStyle: Style, cursor: Cursor, chunks: MutableList<Chunk>) {
+            for (node in el.children) {
+                if (node is XmlText) {
+                    val text = collapse(node.text)
                     if (text.isNotEmpty()) chunks.last().runs.add(TextRun(text, parentStyle, 0.0, 0.0))
                     continue
                 }
-                val child = node as? Element ?: continue
+                val child = node as? XmlElement ?: continue
                 val name = localName(child)
                 if (name == "textPath") {
                     skipped.add("text on a path")
@@ -510,7 +495,7 @@ object SvgReader {
          * here — bounding-box units, `gradientTransform`, the referring element's own transform —
          * so nothing downstream carries a matrix or needs to know what the path's box was.
          */
-        private fun gradient(el: Element, alpha: Double, ctm: Affine, box: Rect, radial: Boolean): VectorPaint? {
+        private fun gradient(el: XmlElement, alpha: Double, ctm: Affine, box: Rect, radial: Boolean): VectorPaint? {
             val stops = gradientStops(el, alpha)
             if (stops.isEmpty()) return null
             val onBox = (gradientAttr(el, "gradientUnits") ?: "objectBoundingBox").trim() != "userSpaceOnUse"
@@ -556,8 +541,8 @@ object SvgReader {
         }
 
         /** An attribute of [el] or of whatever it inherits from through `href`. */
-        private fun gradientAttr(el: Element, name: String): String? {
-            var cur: Element? = el
+        private fun gradientAttr(el: XmlElement, name: String): String? {
+            var cur: XmlElement? = el
             var hops = 0
             while (cur != null && hops++ < MAX_HREF_HOPS) {
                 attr(cur, name)?.let { return it }
@@ -567,8 +552,8 @@ object SvgReader {
         }
 
         /** The nearest stops up the `href` chain, which is how a file shares one ramp everywhere. */
-        private fun gradientStops(el: Element, alpha: Double): List<GradientStop> {
-            var cur: Element? = el
+        private fun gradientStops(el: XmlElement, alpha: Double): List<GradientStop> {
+            var cur: XmlElement? = el
             var hops = 0
             while (cur != null && hops++ < MAX_HREF_HOPS) {
                 val stops = children(cur).filter { localName(it) == "stop" }
@@ -578,7 +563,7 @@ object SvgReader {
             return emptyList()
         }
 
-        private fun stop(el: Element, alpha: Double): GradientStop? {
+        private fun stop(el: XmlElement, alpha: Double): GradientStop? {
             val decl = css.declarationsFor(el) + Style.inlineStyle(attr(el, "style"))
             fun prop(name: String) = decl[name] ?: attr(el, name)
             val color = SvgColors.parse(prop("stop-color") ?: "black") ?: return null
@@ -593,7 +578,7 @@ object SvgReader {
             return GradientStop(offset, color.withAlpha((a * 255.0).toInt().coerceIn(0, 255)))
         }
 
-        private fun hrefTarget(el: Element): Element? {
+        private fun hrefTarget(el: XmlElement): XmlElement? {
             val href = (attr(el, "href") ?: attrNs(el, XLINK, "href"))?.trim() ?: return null
             if (!href.startsWith("#")) return null
             return byId[href.substring(1)]
@@ -604,7 +589,7 @@ object SvgReader {
          * is kept and applied to the geometry; anything else is named and ignored, since dropping
          * the clipped content entirely would hide far more than the clip ever would.
          */
-        private fun clipped(style: Style, el: Element, ctm: Affine): Style {
+        private fun clipped(style: Style, el: XmlElement, ctm: Affine): Style {
             val source = (Style.inlineStyle(attr(el, "style"))["clip-path"] ?: attr(el, "clip-path"))?.trim()
                 ?: return style
             if (!source.startsWith("url(")) return style
@@ -626,7 +611,7 @@ object SvgReader {
          * else. The artboard clip an exporter writes is exactly this shape, which is the case worth
          * getting right; a genuinely arbitrary clip would need a polygon boolean library.
          */
-        private fun clipRect(el: Element, ctm: Affine): Rect? {
+        private fun clipRect(el: XmlElement, ctm: Affine): Rect? {
             if ((attr(el, "clipPathUnits") ?: "userSpaceOnUse").trim() != "userSpaceOnUse") return null
             val kids = children(el).filter { localName(it) != "title" && localName(it) != "desc" }
             val only = kids.singleOrNull() ?: return null
@@ -711,7 +696,7 @@ object SvgReader {
 
         fun glyphStyle() = GlyphStyle(fontFamily, fontSize, bold, italic, letterSpacing)
 
-        fun inherit(el: Element, css: CssRules): Style {
+        fun inherit(el: XmlElement, css: CssRules): Style {
             val decl = css.declarationsFor(el) + inlineStyle(attr(el, "style"))
             fun prop(name: String): String? = decl[name] ?: attr(el, name)
             val display = prop("display")?.trim()?.lowercase()
@@ -722,7 +707,7 @@ object SvgReader {
                 color = prop("color")?.let { SvgColors.parse(it) } ?: color,
                 fillOpacity = prop("fill-opacity")?.let { alpha(it) } ?: fillOpacity,
                 strokeOpacity = prop("stroke-opacity")?.let { alpha(it) } ?: strokeOpacity,
-                // Element opacity does not inherit; it multiplies down the tree, and a group's own
+                // XmlElement opacity does not inherit; it multiplies down the tree, and a group's own
                 // opacity needs an offscreen pass to be exact, so this is the flat approximation.
                 opacity = opacity * (prop("opacity")?.let { alpha(it) } ?: 1.0),
                 fillRule = when (prop("fill-rule")?.trim()?.lowercase()) {
@@ -847,7 +832,7 @@ object SvgReader {
         private val byTag = HashMap<String, MutableMap<String, String>>()
         private val byId = HashMap<String, MutableMap<String, String>>()
 
-        fun collect(el: Element) {
+        fun collect(el: XmlElement) {
             if (localName(el) == "style") {
                 parse(el.textContent ?: "")
             } else {
@@ -885,7 +870,7 @@ object SvgReader {
         }
 
         /** Declarations for [el], weakest source first, so the caller's own `style` attribute wins. */
-        fun declarationsFor(el: Element): Map<String, String> {
+        fun declarationsFor(el: XmlElement): Map<String, String> {
             if (byTag.isEmpty() && byClass.isEmpty() && byId.isEmpty()) return emptyMap()
             val out = HashMap<String, String>()
             byTag[localName(el).lowercase()]?.let { out.putAll(it) }
@@ -899,7 +884,7 @@ object SvgReader {
 
     // --- attribute helpers ---
 
-    private fun localName(node: Node): String = node.localName ?: node.nodeName ?: ""
+    private fun localName(el: XmlElement): String = el.localName
 
     /** The overlap of two clips; an empty result is a clip that hides everything, which is legal. */
     private fun intersection(a: Rect, b: Rect) = Rect.fromPoints(
@@ -907,18 +892,13 @@ object SvgReader {
         Pt(maxOf(maxOf(a.left, b.left), minOf(a.right, b.right)), maxOf(maxOf(a.top, b.top), minOf(a.bottom, b.bottom))),
     )
 
-    private fun attr(el: Element, name: String): String? =
+    private fun attr(el: XmlElement, name: String): String? =
         el.getAttribute(name).takeIf { it.isNotEmpty() }
 
-    private fun attrNs(el: Element, ns: String, name: String): String? =
-        runCatching { el.getAttributeNS(ns, name) }.getOrNull()?.takeIf { it.isNotEmpty() }
+    private fun attrNs(el: XmlElement, ns: String, name: String): String? =
+        el.getAttributeNS(ns, name).takeIf { it.isNotEmpty() }
 
-    private fun children(el: Element): List<Element> {
-        val kids = el.childNodes
-        val out = ArrayList<Element>(kids.length)
-        for (i in 0 until kids.length) (kids.item(i) as? Element)?.let { out.add(it) }
-        return out
-    }
+    private fun children(el: XmlElement): List<XmlElement> = el.childElements()
 
     /** Every number in [text], whatever separates them. */
     private fun numbers(text: String?): List<Double> {

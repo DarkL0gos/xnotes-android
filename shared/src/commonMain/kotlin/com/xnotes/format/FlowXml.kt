@@ -1,6 +1,7 @@
 package com.xnotes.format
 
 import com.xnotes.core.model.Rgba
+import com.xnotes.core.platform.javaDoubleToString
 import com.xnotes.core.pal.FontFace
 import com.xnotes.core.text.CharStyle
 import com.xnotes.core.text.FlowMargins
@@ -9,10 +10,7 @@ import com.xnotes.core.text.ParaAlign
 import com.xnotes.core.text.Paragraph
 import com.xnotes.core.text.Run
 import com.xnotes.core.text.TextFlow
-import java.io.ByteArrayInputStream
-import javax.xml.parsers.DocumentBuilderFactory
-import org.w3c.dom.Element
-import org.w3c.dom.Node
+import okio.ByteString.Companion.encodeUtf8
 
 /**
  * Reads/writes the flow as `flow.xml` inside the `.xnote` bundle, speaking the
@@ -53,12 +51,12 @@ object FlowXml {
         append(" xmlns:fo=\"urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0\"")
         append(" xmlns:xnotes=\"urn:xnotes:flow:1.0\"")
         append(" office:version=\"1.2\"")
-        append(" xnotes:margin-left-mm=\"${flow.margins.leftMm}\"")
-        append(" xnotes:margin-top-mm=\"${flow.margins.topMm}\"")
-        append(" xnotes:margin-right-mm=\"${flow.margins.rightMm}\"")
-        append(" xnotes:margin-bottom-mm=\"${flow.margins.bottomMm}\"")
+        append(" xnotes:margin-left-mm=\"${javaDoubleToString(flow.margins.leftMm)}\"")
+        append(" xnotes:margin-top-mm=\"${javaDoubleToString(flow.margins.topMm)}\"")
+        append(" xnotes:margin-right-mm=\"${javaDoubleToString(flow.margins.rightMm)}\"")
+        append(" xnotes:margin-bottom-mm=\"${javaDoubleToString(flow.margins.bottomMm)}\"")
         append(" xnotes:default-face=\"${escapeAttr(flow.defaultFace.id)}\"")
-        append(" xnotes:default-size-pt=\"${flow.defaultSizePt}\"")
+        append(" xnotes:default-size-pt=\"${javaDoubleToString(flow.defaultSizePt)}\"")
         flow.defaultColor?.let { append(" xnotes:default-color=\"${hex(it)}\"") }
         if (flow.monoFace != FontFace.MONO) append(" xnotes:mono-face=\"${escapeAttr(flow.monoFace.id)}\"")
         append(">\n")
@@ -88,7 +86,7 @@ object FlowXml {
             }
         }
         append("  </office:text>\n </office:body>\n</office:document-content>\n")
-    }.toByteArray(Charsets.UTF_8)
+    }.encodeUtf8().toByteArray() // okio, like String.toByteArray(UTF_8): a lone surrogate becomes "?"
 
     private fun StringBuilder.appendTextStyle(name: String, s: CharStyle) {
         append("  <style:style style:name=\"$name\" style:family=\"text\">\n   <style:text-properties")
@@ -100,14 +98,14 @@ object FlowXml {
         s.face?.let { append(" style:font-name=\"${escapeAttr(it.id)}\"") }
         s.color?.let { append(" fo:color=\"${hex(it)}\"") }
         s.highlight?.let { append(" fo:background-color=\"${hex(it)}\"") }
-        s.sizePt?.let { append(" fo:font-size=\"${it}pt\"") }
+        s.sizePt?.let { append(" fo:font-size=\"${javaDoubleToString(it)}pt\"") }
         append("/>\n  </style:style>\n")
     }
 
     private fun StringBuilder.appendParaStyle(name: String, align: ParaAlign, indent: Int) {
         append("  <style:style style:name=\"$name\" style:family=\"paragraph\">\n   <style:paragraph-properties")
         if (align != ParaAlign.LEFT) append(" fo:text-align=\"${align.id}\"")
-        if (indent != 0) append(" fo:margin-left=\"${indent * INDENT_MM_PER_LEVEL}mm\" xnotes:indent=\"$indent\"")
+        if (indent != 0) append(" fo:margin-left=\"${javaDoubleToString(indent * INDENT_MM_PER_LEVEL)}mm\" xnotes:indent=\"$indent\"")
         append("/>\n  </style:style>\n")
     }
 
@@ -164,18 +162,14 @@ object FlowXml {
     private fun escapeAttr(s: String): String =
         s.replace("&", "&amp;").replace("<", "&lt;").replace("\"", "&quot;")
 
-    private fun hex(c: Rgba): String = "#%02x%02x%02x".format(c.r, c.g, c.b)
+    private fun hex(c: Rgba): String = Rgba.toHex(c)
 
     // --- read ---
 
     /** Populate [flow] from [bytes]; malformed XML leaves it untouched (loads empty). */
     fun readInto(flow: TextFlow, bytes: ByteArray) {
         val root = try {
-            DocumentBuilderFactory.newInstance()
-                .apply { isNamespaceAware = true }
-                .newDocumentBuilder()
-                .parse(ByteArrayInputStream(bytes))
-                .documentElement
+            XmlParser.parse(bytes)
         } catch (_: Exception) {
             return
         }
@@ -212,7 +206,7 @@ object FlowXml {
         flow.touch()
     }
 
-    private fun parseCharStyle(props: Element): CharStyle = CharStyle(
+    private fun parseCharStyle(props: XmlElement): CharStyle = CharStyle(
         bold = attr(props, "font-weight") == "bold",
         italic = attr(props, "font-style") == "italic",
         underline = attr(props, "text-underline-style").let { it != null && it != "none" },
@@ -224,7 +218,7 @@ object FlowXml {
         face = attr(props, "font-name")?.takeIf { it.isNotEmpty() }?.let { FontFace(it) },
     )
 
-    private fun parseParaProps(props: Element): Pair<ParaAlign, Int> {
+    private fun parseParaProps(props: XmlElement): Pair<ParaAlign, Int> {
         val align = when (attr(props, "text-align")) {
             "center" -> ParaAlign.CENTER
             "right", "end" -> ParaAlign.RIGHT
@@ -239,7 +233,7 @@ object FlowXml {
     }
 
     private fun parseParagraph(
-        p: Element,
+        p: XmlElement,
         charStyles: Map<String, CharStyle>,
         paraStyles: Map<String, Pair<ParaAlign, Int>>,
     ): Paragraph {
@@ -257,17 +251,15 @@ object FlowXml {
     }
 
     private fun collectRuns(
-        node: Element,
+        node: XmlElement,
         style: CharStyle,
         charStyles: Map<String, CharStyle>,
         out: MutableList<Run>,
     ) {
-        var child = node.firstChild
-        while (child != null) {
-            when {
-                child.nodeType == Node.TEXT_NODE || child.nodeType == Node.CDATA_SECTION_NODE ->
-                    appendText(out, child.nodeValue.orEmpty(), style)
-                child is Element -> when (child.localName ?: child.nodeName) {
+        for (child in node.children) {
+            when (child) {
+                is XmlText -> appendText(out, child.text, style)
+                is XmlElement -> when (child.localName) {
                     "span" -> collectRuns(
                         child,
                         charStyles[attr(child, "style-name")] ?: style,
@@ -279,7 +271,6 @@ object FlowXml {
                     else -> collectRuns(child, style, charStyles, out)
                 }
             }
-            child = child.nextSibling
         }
     }
 
@@ -304,32 +295,22 @@ object FlowXml {
 
     // --- forgiving DOM helpers (match by local name, any namespace/prefix) ---
 
-    private fun descendants(parent: Element, local: String): List<Element> {
-        val out = mutableListOf<Element>()
-        fun walk(n: Node) {
-            var child = n.firstChild
-            while (child != null) {
-                if (child is Element) {
-                    if ((child.localName ?: child.nodeName) == local) out.add(child)
-                    walk(child)
-                }
-                child = child.nextSibling
+    private fun descendants(parent: XmlElement, local: String): List<XmlElement> {
+        val out = mutableListOf<XmlElement>()
+        fun walk(n: XmlElement) {
+            for (child in n.childElements()) {
+                if (child.localName == local) out.add(child)
+                walk(child)
             }
         }
         walk(parent)
         return out
     }
 
-    private fun attr(el: Element, local: String): String? {
-        val attrs = el.attributes
-        for (i in 0 until attrs.length) {
-            val a = attrs.item(i)
-            if ((a.localName ?: a.nodeName) == local) return a.nodeValue
-        }
-        return null
-    }
+    private fun attr(el: XmlElement, local: String): String? =
+        el.attributes.firstOrNull { it.localName == local }?.value
 
-    private fun attrDouble(el: Element, local: String, fallback: Double): Double =
+    private fun attrDouble(el: XmlElement, local: String, fallback: Double): Double =
         attr(el, local)?.toDoubleOrNull() ?: fallback
 
     private fun parseHex(s: String?): Rgba? {
