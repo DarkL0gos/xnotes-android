@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalForeignApi::class)
+
 package com.xnotes
 
 import com.xnotes.core.doubleCorpus
@@ -6,6 +8,10 @@ import com.xnotes.format.JsonPull
 import com.xnotes.format.Utf8CharSource
 import okio.Buffer
 import okio.ByteString.Companion.encodeUtf8
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.toKString
+import platform.posix.LC_ALL
+import platform.posix.setlocale
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -39,6 +45,21 @@ class DoubleTextTest {
             1240.1574803149608 to "1240.1574803149608", -1.5e-7 to "-1.5E-7",
         )
         for ((v, text) in cases) assertEquals(text, javaDoubleToString(v), "$v")
+    }
+
+    /** A host may switch the process to a comma-decimal locale (Qt does, from LANG): files must not follow. */
+    @Test fun ignoresTheProcessLocale() {
+        val previous = setlocale(LC_ALL, null)?.toKString()
+        val set = listOf("ru_RU.UTF-8", "de_DE.UTF-8", "ru_RU.utf8", "de_DE.utf8").firstNotNullOfOrNull { setlocale(LC_ALL, it) }
+        try {
+            if (set == null) return // no such locale installed
+            assertEquals("1240.1574803149608", javaDoubleToString(1240.1574803149608))
+            assertEquals("-1.5E-7", javaDoubleToString(-1.5e-7))
+            val text = doubleCorpus().joinToString("\n") { javaDoubleToString(it) }
+            assertEquals(JDK_DIGEST, text.encodeUtf8().sha256().hex())
+        } finally {
+            setlocale(LC_ALL, previous ?: "C")
+        }
     }
 
     private companion object {

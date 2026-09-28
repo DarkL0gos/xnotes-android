@@ -7,8 +7,11 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.toKString
+import platform.posix.LC_ALL_MASK
+import platform.posix.newlocale
 import platform.posix.snprintf
 import platform.posix.strtod
+import platform.posix.uselocale
 
 /*
  * Kotlin/Native's Double.toString is not the JDK's: above ~1e12 it sometimes picks another last
@@ -24,8 +27,23 @@ actual fun javaDoubleToString(v: Double): String {
     return layout(v < 0, digits, exponent)
 }
 
+/*
+ * printf and strtod follow LC_NUMERIC, which a host may set from the environment (Qt does): under
+ * ru_RU they would write "1,5". The conversion runs in the C locale, on this thread only.
+ */
+private val cLocale = newlocale(LC_ALL_MASK, "C", null)
+
 /** The significant digits (no sign, no trailing zeros beyond two digits) and the decimal exponent of the first. */
-private fun shortestDigits(v: Double): Pair<String, Int> = memScoped {
+private fun shortestDigits(v: Double): Pair<String, Int> {
+    val previous = uselocale(cLocale)
+    try {
+        return shortestDigitsInLocale(v)
+    } finally {
+        uselocale(previous)
+    }
+}
+
+private fun shortestDigitsInLocale(v: Double): Pair<String, Int> = memScoped {
     val buf = allocArray<ByteVar>(64)
     for (precision in 2..17) {
         snprintf(buf, 64u, "%.*e", precision - 1, v)
