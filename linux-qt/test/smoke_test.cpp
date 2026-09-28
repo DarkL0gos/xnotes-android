@@ -3,6 +3,7 @@
 // reopens, undo works, and every surface is released.
 #include "CanvasWidget.h"
 #include "SelectionBar.h"
+#include "TextOverlay.h"
 
 #include <QPointingDevice>
 #include <QTabletEvent>
@@ -266,6 +267,52 @@ private slots:
         for (int i = 1; i <= 10; i++) QTest::mouseMove(&canvas, QPoint(200 + i * 20, 600 + i * 10));
         QTest::mouseRelease(&canvas, Qt::LeftButton, {}, QPoint(400, 700));
         QCOMPARE(xn_note_item_count(note, 0), 2);
+
+        canvas.setNote(nullptr);
+        xn_note_close(note);
+    }
+
+    /* A text box: a click opens the field, typing fills it, a click elsewhere files it on the page. */
+    void textBox() {
+        xn_note* note = xn_note_new(1);
+        CanvasWidget canvas;
+        canvas.resize(800, 1000);
+        canvas.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&canvas));
+        canvas.setNote(note);
+        canvas.setDark(false);
+        xn_editor_set_ink_color(canvas.editor(), 0xff0000ff);
+        xn_editor_set_text_size(canvas.editor(), 24);
+        QSignalSpy tools(&canvas, &CanvasWidget::toolChanged);
+        canvas.setTool("text_box");
+        QTest::mouseClick(&canvas, Qt::LeftButton, {}, QPoint(200, 300));
+        auto* field = canvas.findChild<TextOverlay*>();
+        QVERIFY(field && field->isVisible());
+        QVERIFY(qAbs(field->x() - 200) < 20 && qAbs(field->y() - 300) < 30);
+        for (const QChar ch : QStringLiteral("Привет, мир")) {  // QTest::keyClicks is ASCII only
+            QKeyEvent press(QEvent::KeyPress, Qt::Key_unknown, Qt::NoModifier, QString(ch));
+            QApplication::sendEvent(field, &press);
+        }
+        QCOMPARE(field->text(), QStringLiteral("Привет, мир"));
+        QCOMPARE(xn_note_item_count(note, 0), 0);  // still a draft
+
+        QTest::mouseClick(&canvas, Qt::LeftButton, {}, QPoint(500, 800));
+        QVERIFY(!field->isVisible());
+        QCOMPARE(xn_note_item_count(note, 0), 1);
+        QVERIFY(!tools.isEmpty() && tools.last().at(0).toString() == QLatin1String("pen"));
+        QVERIFY2(inkPixels(grab(canvas), QRect(190, 290, 300, 60)) > 50, "the text is drawn on the page");
+
+        // Finishing the edit re-arms the tool the text tool replaced; clicking the box again with
+        // the text tool reopens it with its text.
+        QCOMPARE(QByteArray(xn_editor_tool(canvas.editor())), QByteArray("pen"));
+        canvas.setTool("text_box");
+        QTest::mouseClick(&canvas, Qt::LeftButton, {}, QPoint(215, 310));
+        QVERIFY(field->isVisible());
+        QCOMPARE(field->text(), QStringLiteral("Привет, мир"));
+        field->selectAll();
+        QTest::keyClick(field, Qt::Key_Backspace);
+        xn_editor_text_commit(canvas.editor());
+        QCOMPARE(xn_note_item_count(note, 0), 0);  // emptied: removed
 
         canvas.setNote(nullptr);
         xn_note_close(note);

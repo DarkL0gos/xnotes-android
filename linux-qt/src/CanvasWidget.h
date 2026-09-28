@@ -12,6 +12,7 @@
 #include <vector>
 
 class QTabletEvent;
+class TextOverlay;
 class QTouchEvent;
 
 class CanvasWidget : public QWidget {
@@ -65,6 +66,7 @@ protected:
 private:
     xn::CoreHost core_;
     xn_editor* editor_ = nullptr;
+    TextOverlay* textOverlay_;
     QImage frame_;
     double dpr_ = 1.0;
     double lastFrameMs_ = 0;

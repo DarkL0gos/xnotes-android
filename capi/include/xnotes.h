@@ -97,6 +97,8 @@ typedef struct xn_renderer_vt {
 
 enum { XN_NOTICE_KEEP_ONE_PAGE = 1, XN_NOTICE_PAGE_ALREADY_EMPTY = 2 };
 
+struct xn_text_field;
+
 typedef struct xn_host {
     void* ctx; /* passed back as the first argument of every service below */
     const xn_renderer_vt* renderer;
@@ -147,6 +149,10 @@ typedef struct xn_host {
     void (*context_menu)(void* ctx, double x, double y, int on_locked);
     /* The editor switched tools by itself (a long-press grab, and back). */
     void (*tool_changed)(void* ctx, const char* tool_id);
+    /* A text box is being edited: show an input field there (field != NULL, its strings valid
+       during the call; sent again when its style changes), or close it (field == NULL). While
+       open, the box is not drawn on the canvas: the field shows it. */
+    void (*text_edit)(void* ctx, const struct xn_text_field* field);
 } xn_host;
 
 /* --- library -------------------------------------------------------------------------------- */
@@ -230,6 +236,7 @@ void xn_editor_hover(xn_editor* editor, const xn_pointer_event* event);
 
 /* Tool ids as in the file format: "pen", "highlighter", "eraser", "pan", "lasso", "select", ... Returns 0 if unknown. */
 int xn_editor_set_tool(xn_editor* editor, const char* tool_id);
+/* The ink of new strokes, shapes and boxes; also recolours the text box being edited or selected. */
 void xn_editor_set_ink_color(xn_editor* editor, xn_rgba color);
 void xn_editor_undo(xn_editor* editor);
 void xn_editor_redo(xn_editor* editor);
@@ -254,6 +261,34 @@ typedef struct xn_shape_style {
     int dashed;
 } xn_shape_style;
 void xn_editor_set_shape_style(xn_editor* editor, const xn_shape_style* style);
+
+/* --- text boxes (tool "text_box") --- */
+
+/* The open text field: (x, y) is its top-left in viewport pixels; width, height and font_px are
+   page pixels, drawn at zoom (so on screen the box is width * zoom wide). */
+typedef struct xn_text_field {
+    double x, y;
+    double width, height;
+    double font_px;
+    double zoom;
+    xn_rgba color;
+    int rotation;          /* view rotation, degrees clockwise about (x, y) */
+    const uint16_t* face;  /* font family id, as in xn_font */
+    int face_len;
+    const uint16_t* text;
+    int text_len;
+} xn_text_field;
+
+/* The open field's current geometry (after a scroll or zoom); strings are left NULL. 0 when none. */
+int xn_editor_text_field(const xn_editor* editor, xn_text_field* out);
+/* The field's text changed: keep the box in step (it grows as it fills). */
+void xn_editor_text_update(xn_editor* editor, const uint16_t* text, int len);
+/* Finish the edit: an empty box is dropped, a changed one recorded for undo. */
+void xn_editor_text_commit(xn_editor* editor);
+/* Style of the box being edited or the single selected one, and of the next new box.
+   face: "mono", "sans", "serif", "hand" or a family name; size in points (6..96). */
+void xn_editor_set_text_face(xn_editor* editor, const char* face);
+void xn_editor_set_text_size(xn_editor* editor, double point_size);
 
 /* --- selection (lasso, select, long-press grab) --- */
 

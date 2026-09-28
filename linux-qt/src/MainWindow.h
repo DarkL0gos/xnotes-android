@@ -11,7 +11,9 @@
 #include <memory>
 
 class CanvasWidget;
+class QComboBox;
 class QDoubleSpinBox;
+class QSpinBox;
 class QLabel;
 class SelectionBar;
 
@@ -43,6 +45,10 @@ private:
     bool dark_ = true;
     SelectionBar* selectionBar_;
     QDoubleSpinBox* width_;
+    QComboBox* face_;
+    QSpinBox* textSize_;
+    QList<QAction*> widthActions_;
+    QList<QAction*> textActions_;
     bool syncingWidth_ = false;
     QHash<QByteArray, double> widths_;
     QByteArray shapeKind_ = "rectangle";

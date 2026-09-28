@@ -41,7 +41,8 @@ add_library(xnotes_host STATIC
     src/CoreHost.cpp src/CoreHost.h
     src/CanvasWidget.cpp src/CanvasWidget.h
     src/MainWindow.cpp src/MainWindow.h
-    src/SelectionBar.cpp src/SelectionBar.h)
+    src/SelectionBar.cpp src/SelectionBar.h
+    src/TextOverlay.cpp src/TextOverlay.h)
 target_include_directories(xnotes_host PUBLIC src)
 target_link_libraries(xnotes_host PUBLIC Qt6::Widgets xnotes_core)
 target_compile_options(xnotes_host PRIVATE -Wall -Wextra)

@@ -291,18 +291,23 @@ CoreHost* H(void* ctx) { return static_cast<CoreHost*>(ctx); }
 const xn_renderer_vt* CoreHost::vtable() { return &kVtable; }
 
 QFont CoreHost::fontFor(const xn_font* f) {
-    const QString face = fromUtf16(f->face, f->face_len);
+    // Points at the page's 150 px per inch, in pixels: sized the same whatever device draws it.
+    return fontForFace(fromUtf16(f->face, f->face_len), f->point_size * 150.0 / 72.0, f->bold != 0, f->italic != 0);
+}
+
+QFont CoreHost::fontForFace(const QString& face, double pixelSize, bool bold, bool italic) {
     QFont font;
     if (face == QLatin1String("serif")) font.setFamilies({QStringLiteral("serif")});
     else if (face == QLatin1String("mono") || face.isEmpty()) font.setFamilies({QStringLiteral("monospace")});
     else if (face == QLatin1String("sans")) font.setFamilies({QStringLiteral("sans-serif")});
     else if (face == QLatin1String("hand")) font.setFamilies({QStringLiteral("cursive"), QStringLiteral("sans-serif")});
     else font.setFamilies({face, QStringLiteral("sans-serif")});
-    // Points at the page's 150 px per inch, in pixels: sized the same whatever device draws it.
-    font.setPixelSize(std::max(1, int(std::lround(f->point_size * 150.0 / 72.0))));
+    // Whole pixels, rounded with a little slack: the core converts points in float (37.4999985 for
+    // 18 pt), this side in double (37.5), and both must land on the same font.
+    font.setPixelSize(std::max(1, int(std::floor(pixelSize + 0.5 + 1e-4))));
     font.setStyleHint(face == QLatin1String("serif") ? QFont::Serif : face == QLatin1String("sans") ? QFont::SansSerif : QFont::Monospace);
-    font.setBold(f->bold != 0);
-    font.setItalic(f->italic != 0);
+    font.setBold(bold);
+    font.setItalic(italic);
     return font;
 }
 
@@ -329,6 +334,7 @@ CoreHost::CoreHost() {
     host_.selection_menu = selectionMenu;
     host_.context_menu = contextMenu;
     host_.tool_changed = toolChanged;
+    host_.text_edit = textEdit;
 }
 
 CoreHost::~CoreHost() {
@@ -437,6 +443,10 @@ void CoreHost::selectionMenu(void* ctx, int shown, double x, double y, double w,
 
 void CoreHost::contextMenu(void* ctx, double x, double y, int onLocked) {
     if (H(ctx)->onContextMenu) H(ctx)->onContextMenu(QPointF(x, y), onLocked != 0);
+}
+
+void CoreHost::textEdit(void* ctx, const xn_text_field* field) {
+    if (H(ctx)->onTextEdit) H(ctx)->onTextEdit(field);
 }
 
 void CoreHost::toolChanged(void* ctx, const char* toolId) {

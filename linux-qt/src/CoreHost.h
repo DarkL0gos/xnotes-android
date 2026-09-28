@@ -85,6 +85,7 @@ public:
     std::function<void(bool, QRectF)> onSelectionMenu;
     std::function<void(QPointF, bool)> onContextMenu;
     std::function<void(QString)> onToolChanged;
+    std::function<void(const xn_text_field*)> onTextEdit;
 
     int liveSurfaces() const { return liveSurfaces_; }
 
@@ -93,6 +94,8 @@ public:
 
     /* Fonts as the core sizes them: points at 150 pixels per inch. */
     static QFont fontFor(const xn_font* f);
+    /* A face id ("mono", "sans", ...) at a pixel size. */
+    static QFont fontForFace(const QString& face, double pixelSize, bool bold = false, bool italic = false);
 
 private:
     xn_host host_{};
@@ -117,6 +120,7 @@ private:
     static void selectionMenu(void* ctx, int shown, double x, double y, double w, double h);
     static void contextMenu(void* ctx, double x, double y, int onLocked);
     static void toolChanged(void* ctx, const char* toolId);
+    static void textEdit(void* ctx, const xn_text_field* field);
 
     void schedule(uint64_t task, int delayMs);
 };

@@ -6,7 +6,9 @@
 #include <QApplication>
 #include <QCloseEvent>
 #include <QColorDialog>
+#include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QSpinBox>
 #include <QMenu>
 #include <QToolButton>
 #include <QFileDialog>
@@ -35,7 +37,15 @@ const ToolEntry kTools[] = {
     {"lasso", "Лассо", "5"},
     {"select", "Выделение", "6"},
     {"shape", "Фигура", "7"},
+    {"text_box", "Текст", "8"},
 };
+
+struct FaceEntry {
+    const char* id;
+    const char* label;
+};
+
+const FaceEntry kFaces[] = {{"mono", "Моноширинный"}, {"sans", "Без засечек"}, {"serif", "С засечками"}, {"hand", "Рукописный"}};
 
 struct ShapeEntry {
     const char* id;
@@ -184,7 +194,7 @@ void MainWindow::buildUi() {
     });
     tools->addSeparator();
 
-    tools->addWidget(new QLabel(QStringLiteral(" Толщина "), this));
+    widthActions_ << tools->addWidget(new QLabel(QStringLiteral(" Толщина "), this));
     width_ = new QDoubleSpinBox(this);
     width_->setRange(XN_STYLE_MIN_WIDTH, XN_STYLE_MAX_WIDTH);
     width_->setSingleStep(0.5);
@@ -197,7 +207,22 @@ void MainWindow::buildUi() {
         if (tool == "shape") applyShape();
         else if (auto* e = canvas_->editor()) xn_editor_set_tool_width(e, tool.constData(), w);
     });
-    tools->addWidget(width_);
+    widthActions_ << tools->addWidget(width_);
+
+    // Text box style: the box being edited or selected, and the next one.
+    face_ = new QComboBox(this);
+    for (const FaceEntry& f : kFaces) face_->addItem(QString::fromUtf8(f.label), QByteArray(f.id));
+    face_->setFocusPolicy(Qt::ClickFocus);
+    connect(face_, &QComboBox::currentIndexChanged, this, [this] {
+        if (auto* e = canvas_->editor()) xn_editor_set_text_face(e, face_->currentData().toByteArray().constData());
+    });
+    textSize_ = new QSpinBox(this);
+    textSize_->setRange(6, 96);
+    textSize_->setValue(13);
+    textSize_->setSuffix(QStringLiteral(" пт"));
+    textSize_->setFocusPolicy(Qt::ClickFocus);
+    connect(textSize_, &QSpinBox::valueChanged, this, [this](int pt) { if (auto* e = canvas_->editor()) xn_editor_set_text_size(e, pt); });
+    textActions_ << tools->addWidget(face_) << tools->addWidget(textSize_);
     tools->addSeparator();
 
     for (const QColor& c : kSwatches) {
@@ -247,6 +272,8 @@ QByteArray MainWindow::currentTool() const {
 
 void MainWindow::syncWidth() {
     const QByteArray tool = currentTool();
+    for (QAction* a : std::as_const(widthActions_)) a->setVisible(tool != "text_box");
+    for (QAction* a : std::as_const(textActions_)) a->setVisible(tool == "text_box");
     width_->setEnabled(hasWidth(tool));
     if (!hasWidth(tool)) return;
     double w = widths_.value(tool, 0);
@@ -270,6 +297,8 @@ void MainWindow::applyToolSettings() {
     for (auto it = widths_.cbegin(); it != widths_.cend(); ++it)
         if (it.key() != "shape") xn_editor_set_tool_width(e, it.key().constData(), it.value());
     applyShape();
+    xn_editor_set_text_face(e, face_->currentData().toByteArray().constData());
+    xn_editor_set_text_size(e, textSize_->value());
 }
 
 void MainWindow::pasteAt(QPointF widget) {

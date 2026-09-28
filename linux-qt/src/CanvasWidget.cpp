@@ -1,5 +1,7 @@
 #include "CanvasWidget.h"
 
+#include "TextOverlay.h"
+
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPointingDevice>
@@ -39,7 +41,13 @@ CanvasWidget::CanvasWidget(QWidget* parent) : QWidget(parent) {
     core_.runTask = [this](uint64_t task) { if (editor_) xn_editor_run_task(editor_, task); };
     core_.onRender = [this] { update(); };
     core_.onContentChanged = [this] { emit contentChanged(); };
-    core_.onViewChanged = [this] { update(); emit viewChanged(); };
+    core_.onViewChanged = [this] {
+        update();
+        textOverlay_->reposition();
+        emit viewChanged();
+    };
+    textOverlay_ = new TextOverlay(this);
+    core_.onTextEdit = [this](const xn_text_field* field) { textOverlay_->onTextEdit(field); };
     core_.onNotice = [this](int code) { emit notice(code); };
     core_.onSelectionMenu = [this](bool shown, QRectF r) {
         emit selectionMenu(shown, QRectF(r.topLeft() / dpr_, r.size() / dpr_));
@@ -58,6 +66,7 @@ void CanvasWidget::setNote(xn_note* note) {
         xn_editor_destroy(editor_);
         editor_ = nullptr;
     }
+    textOverlay_->onTextEdit(nullptr);
     penDown_ = mouseDown_ = panning_ = false;
     touches_.clear();
     if (!note) return;

@@ -11,6 +11,11 @@ import com.xnotes.capi.c.xn_palette
 import com.xnotes.capi.c.xn_pointer
 import com.xnotes.capi.c.xn_pointer_event
 import com.xnotes.capi.c.xn_shape_style
+import com.xnotes.capi.c.xn_text_field
+import com.xnotes.canvas.EditingField
+import com.xnotes.core.pal.FontFace
+import kotlinx.cinterop.UShortVar
+import kotlinx.cinterop.memScoped
 import com.xnotes.core.tools.ShapeConfig
 import kotlinx.cinterop.DoubleVar
 import kotlinx.cinterop.UIntVar
@@ -204,11 +209,31 @@ internal class CEditor(note: CNote, private val host: xn_host) {
         onSelectionMenu = { rect ->
             host.selection_menu?.invoke(host.ctx, if (rect != null) 1 else 0, rect?.x ?: 0.0, rect?.y ?: 0.0, rect?.w ?: 0.0, rect?.h ?: 0.0)
         },
+        onTextEditStart = { field -> sendTextField(field) },
+        onTextEditEnd = { host.text_edit?.invoke(host.ctx, null) },
         onContextMenu = { viewport, _, locked ->
             pressedLocked = locked
             host.context_menu?.invoke(host.ctx, viewport.x, viewport.y, if (locked != null) 1 else 0)
         },
     )
+
+    private fun sendTextField(field: EditingField?) {
+        val send = host.text_edit ?: return
+        if (field == null) return send.invoke(host.ctx, null)
+        memScoped {
+            val f = alloc<xn_text_field>()
+            fillField(f, field)
+            withUtf16(field.face.id) { face, faceLen ->
+                withUtf16(field.text) { text, textLen ->
+                    f.face = face
+                    f.face_len = faceLen
+                    f.text = text
+                    f.text_len = textLen
+                    send.invoke(host.ctx, f.ptr)
+                }
+            }
+        }
+    }
 
     /** The locked item the last context menu was opened on. */
     var pressedLocked: CanvasItem? = null
@@ -337,7 +362,7 @@ fun xnEditorSetTool(editor: COpaquePointer?, toolId: String?): Int = guard(0) {
 }
 
 @CName("xn_editor_set_ink_color")
-fun xnEditorSetInkColor(editor: COpaquePointer?, color: UInt) = guard(Unit) { editor!!.editor().controller.inkColor = unpack(color) }
+fun xnEditorSetInkColor(editor: COpaquePointer?, color: UInt) = guard(Unit) { editor!!.editor().controller.pickInk(unpack(color)) }
 
 @CName("xn_editor_undo")
 fun xnEditorUndo(editor: COpaquePointer?) = guard(Unit) {
@@ -442,6 +467,46 @@ fun xnEditorSetShapeStyle(editor: COpaquePointer?, style: CPointer<xn_shape_styl
         dashed = s.dashed != 0,
     )
 }
+
+internal fun fillField(f: xn_text_field, field: EditingField) {
+    f.x = field.x
+    f.y = field.y
+    f.width = field.width
+    f.height = field.height
+    f.font_px = field.fontPx
+    f.zoom = field.zoom
+    f.color = field.rgba.packed()
+    f.rotation = field.rotation
+    f.face = null
+    f.face_len = 0
+    f.text = null
+    f.text_len = 0
+}
+
+@CName("xn_editor_text_field")
+fun xnEditorTextField(editor: COpaquePointer?, out: CPointer<xn_text_field>?): Int = guard(0) {
+    val field = editor!!.editor().controller.editingField() ?: return@guard 0
+    fillField(out!!.pointed, field)
+    1
+}
+
+@CName("xn_editor_text_update")
+fun xnEditorTextUpdate(editor: COpaquePointer?, text: CPointer<UShortVar>?, len: Int) = guard(Unit) {
+    val e = editor!!.editor()
+    e.controller.updateEditingText(if (text == null || len <= 0) "" else CharArray(len) { text[it].toInt().toChar() }.concatToString())
+    e.requestRender()
+}
+
+@CName("xn_editor_text_commit")
+fun xnEditorTextCommit(editor: COpaquePointer?) = guard(Unit) { editor!!.editor().controller.commitTextEdit() }
+
+@CName("xn_editor_set_text_face")
+fun xnEditorSetTextFace(editor: COpaquePointer?, face: String?) = guard(Unit) {
+    editor!!.editor().controller.setTextFace(FontFace.fromId(face))
+}
+
+@CName("xn_editor_set_text_size")
+fun xnEditorSetTextSize(editor: COpaquePointer?, size: Double) = guard(Unit) { editor!!.editor().controller.setTextPointSize(size) }
 
 @CName("xn_editor_has_selection")
 fun xnEditorHasSelection(editor: COpaquePointer?): Int = guard(0) { if (editor!!.editor().controller.hasSelection) 1 else 0 }

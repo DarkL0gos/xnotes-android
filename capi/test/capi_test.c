@@ -94,6 +94,8 @@ typedef struct {
     uint64_t frames[64];
     int frames_n;
     int menu_shown, menu_calls, context_calls;
+    int text_open, text_calls;
+    double text_x, text_font;
     char tool[32];
 } host_state;
 
@@ -181,6 +183,16 @@ static void h_tool_changed(void* ctx, const char* tool) {
     snprintf(((host_state*)ctx)->tool, sizeof ((host_state*)ctx)->tool, "%s", tool);
 }
 
+static void h_text_edit(void* ctx, const xn_text_field* f) {
+    host_state* hs = ctx;
+    hs->text_calls++;
+    hs->text_open = f != NULL;
+    if (f) {
+        hs->text_x = f->x;
+        hs->text_font = f->font_px;
+    }
+}
+
 static xn_host make_host(host_state* hs) {
     memset(hs, 0, sizeof(*hs));
     hs->screen_target.c = &hs->screen;
@@ -192,7 +204,7 @@ static xn_host make_host(host_state* hs) {
         i_probe,
         h_render, h_content, h_view, h_notice,
         h_post, h_cancel, h_frame,
-        h_selection_menu, h_context_menu, h_tool_changed,
+        h_selection_menu, h_context_menu, h_tool_changed, h_text_edit,
     };
     return h;
 }
@@ -327,6 +339,31 @@ int main(int argc, char** argv) {
     memset(&hs.screen, 0, sizeof(hs.screen));
     xn_editor_paint(ed, &hs.screen_target);
     xn_editor_undo(ed);
+    xn_editor_set_tool(ed, "pen");
+
+    /* v2: a text box. A tap with the text box tool opens a field; typing fills it; commit files it. */
+    CHECK(xn_editor_set_tool(ed, "text_box") == 1, "text box tool");
+    xn_editor_set_text_size(ed, 20);
+    pen(ed, XN_ACTION_DOWN, 250, 700, t + 300, 0, NULL, NULL);
+    pen(ed, XN_ACTION_UP, 250, 700, t + 340, 0, NULL, NULL);
+    CHECK(hs.text_open == 1, "a text field opened (%d calls)", hs.text_calls);
+    CHECK(hs.text_x > 200 && hs.text_x < 300 && hs.text_font > 20, "field at %g, font %g px", hs.text_x, hs.text_font);
+    const uint16_t hello[] = {'H', 'e', 'l', 'l', 'o', 0x0416};
+    xn_editor_text_update(ed, hello, 6);
+    xn_text_field field;
+    CHECK(xn_editor_text_field(ed, &field) == 1 && field.width > 0 && field.text == NULL, "field geometry");
+    xn_editor_text_commit(ed);
+    CHECK(hs.text_open == 0, "commit closes the field");
+    CHECK(xn_note_item_count(note, page) == 2, "the box was filed (%d)", xn_note_item_count(note, page));
+    CHECK(xn_editor_text_field(ed, &field) == 0, "no field after commit");
+    /* An empty box is dropped. */
+    pen(ed, XN_ACTION_DOWN, 250, 800, t + 400, 0, NULL, NULL);
+    pen(ed, XN_ACTION_UP, 250, 800, t + 440, 0, NULL, NULL);
+    CHECK(hs.text_open == 1, "a second field");
+    xn_editor_text_commit(ed);
+    CHECK(xn_note_item_count(note, page) == 2, "an empty box is dropped");
+    xn_editor_undo(ed);
+    CHECK(xn_note_item_count(note, page) == 1, "undo removes the box");
     xn_editor_set_tool(ed, "pen");
 
     /* Pages and notices. */
