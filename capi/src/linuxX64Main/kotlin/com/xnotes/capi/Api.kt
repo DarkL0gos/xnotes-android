@@ -10,9 +10,17 @@ import com.xnotes.capi.c.xn_host
 import com.xnotes.capi.c.xn_palette
 import com.xnotes.capi.c.xn_pointer
 import com.xnotes.capi.c.xn_pointer_event
+import com.xnotes.capi.c.xn_shape_style
+import com.xnotes.core.tools.ShapeConfig
+import kotlinx.cinterop.DoubleVar
+import kotlinx.cinterop.UIntVar
 import com.xnotes.core.geometry.Pt
 import com.xnotes.core.history.History
+import com.xnotes.core.model.CanvasItem
 import com.xnotes.core.model.Document
+import com.xnotes.core.model.DrawStyle
+import com.xnotes.core.model.Rgba
+import com.xnotes.core.tools.ShapeKind
 import com.xnotes.core.pal.FontSpec
 import com.xnotes.core.pal.ImageCodec
 import com.xnotes.core.pal.ImageSize
@@ -98,7 +106,7 @@ private fun COpaquePointer.note(): CNote = asStableRef<CNote>().get()
 private fun COpaquePointer.editor(): CEditor = asStableRef<CEditor>().get()
 
 @CName("xn_api_version")
-fun xnApiVersion(): Int = 1
+fun xnApiVersion(): Int = 2
 
 @CName("xn_free_string")
 fun xnFreeString(s: CPointer<ByteVar>?) = free(s)
@@ -192,7 +200,18 @@ internal class CEditor(note: CNote, private val host: xn_host) {
         chromePalette = { palette },
         onContentChanged = { host.content_changed!!.invoke(host.ctx) },
         onViewChanged = { host.view_changed!!.invoke(host.ctx) },
+        onToolChanged = { t -> host.tool_changed?.invoke(host.ctx, toolName(t)) },
+        onSelectionMenu = { rect ->
+            host.selection_menu?.invoke(host.ctx, if (rect != null) 1 else 0, rect?.x ?: 0.0, rect?.y ?: 0.0, rect?.w ?: 0.0, rect?.h ?: 0.0)
+        },
+        onContextMenu = { viewport, _, locked ->
+            pressedLocked = locked
+            host.context_menu?.invoke(host.ctx, viewport.x, viewport.y, if (locked != null) 1 else 0)
+        },
     )
+
+    /** The locked item the last context menu was opened on. */
+    var pressedLocked: CanvasItem? = null
     val editor = NoteEditor(state, history, controller, CTextMeasurer(host), object : NoteEditorHost {
         override fun requestRender() = host.request_render!!.invoke(host.ctx)
         override fun contentChanged() = host.content_changed!!.invoke(host.ctx)
@@ -247,6 +266,8 @@ internal class CEditor(note: CNote, private val host: xn_host) {
     }
 
     fun runTask(id: ULong) = scheduler.run(id)
+
+    fun requestRender() = host.request_render!!.invoke(host.ctx)
 
     fun dispose() {
         scheduler.cancelAll()
@@ -384,6 +405,113 @@ fun xnEditorAddPage(editor: COpaquePointer?) = guard(Unit) { editor!!.editor().e
 
 @CName("xn_editor_delete_current_page")
 fun xnEditorDeleteCurrentPage(editor: COpaquePointer?) = guard(Unit) { editor!!.editor().editor.deleteCurrentPage() }
+
+// --- v2: tools, selection -----------------------------------------------------------------------
+
+/** Tool ids as C strings, allocated once and kept for the life of the process. */
+private val toolNames = HashMap<Tool, CPointer<ByteVar>>()
+
+private fun toolName(t: Tool): CPointer<ByteVar>? = toolNames.getOrPut(t) { strdup(t.id)!! }
+
+@CName("xn_editor_tool")
+fun xnEditorTool(editor: COpaquePointer?): CPointer<ByteVar>? = guard(null) { toolName(editor!!.editor().controller.tool) }
+
+@CName("xn_editor_tool_width")
+fun xnEditorToolWidth(editor: COpaquePointer?, toolId: String?): Double = guard(0.0) {
+    val tool = Tool.fromId(toolId) ?: return@guard 0.0
+    editor!!.editor().controller.configFor(tool).baseWidth
+}
+
+@CName("xn_editor_set_tool_width")
+fun xnEditorSetToolWidth(editor: COpaquePointer?, toolId: String?, width: Double) = guard(Unit) {
+    val tool = Tool.fromId(toolId) ?: return@guard
+    val c = editor!!.editor().controller
+    c.setToolConfig(tool, c.configFor(tool).copy(baseWidth = width.coerceIn(DrawStyle.MIN_WIDTH, DrawStyle.MAX_WIDTH)))
+}
+
+@CName("xn_editor_set_shape_style")
+fun xnEditorSetShapeStyle(editor: COpaquePointer?, style: CPointer<xn_shape_style>?) = guard(Unit) {
+    val s = style!!.pointed
+    val c = editor!!.editor().controller
+    val kind = ShapeKind.entries.firstOrNull { it.id == s.kind?.toKString() } ?: c.shapeConfig.shape
+    c.shapeConfig = c.shapeConfig.copy(
+        shape = kind,
+        strokeWidth = s.width.coerceIn(DrawStyle.MIN_WIDTH, DrawStyle.MAX_WIDTH),
+        fill = s.fill != 0,
+        fillAlpha = s.fill_alpha.coerceIn(ShapeConfig.FILL_ALPHA_MIN, ShapeConfig.FILL_ALPHA_MAX),
+        dashed = s.dashed != 0,
+    )
+}
+
+@CName("xn_editor_has_selection")
+fun xnEditorHasSelection(editor: COpaquePointer?): Int = guard(0) { if (editor!!.editor().controller.hasSelection) 1 else 0 }
+
+@CName("xn_editor_selection_rect")
+fun xnEditorSelectionRect(editor: COpaquePointer?, out: CPointer<DoubleVar>?): Int = guard(0) {
+    val rect = editor!!.editor().controller.selectionMenuRect() ?: return@guard 0
+    out!![0] = rect.x
+    out[1] = rect.y
+    out[2] = rect.w
+    out[3] = rect.h
+    1
+}
+
+@CName("xn_editor_select_all")
+fun xnEditorSelectAll(editor: COpaquePointer?) = guard(Unit) { editor!!.editor().controller.selectAll() }
+
+@CName("xn_editor_cut")
+fun xnEditorCut(editor: COpaquePointer?) = guard(Unit) { editor!!.editor().controller.cutSelection() }
+
+@CName("xn_editor_copy")
+fun xnEditorCopy(editor: COpaquePointer?) = guard(Unit) { editor!!.editor().controller.copySelection() }
+
+@CName("xn_editor_duplicate")
+fun xnEditorDuplicate(editor: COpaquePointer?) = guard(Unit) { editor!!.editor().controller.duplicateSelection() }
+
+@CName("xn_editor_bring_to_front")
+fun xnEditorBringToFront(editor: COpaquePointer?) = guard(Unit) { editor!!.editor().controller.bringToFront() }
+
+@CName("xn_editor_lock_selection")
+fun xnEditorLockSelection(editor: COpaquePointer?) = guard(Unit) { editor!!.editor().controller.lockSelection() }
+
+@CName("xn_editor_unlock_pressed")
+fun xnEditorUnlockPressed(editor: COpaquePointer?) = guard(Unit) {
+    val e = editor!!.editor()
+    val item = e.pressedLocked ?: return@guard
+    e.pressedLocked = null
+    e.controller.unlockItem(item)
+    e.state.invalidateAllCaches() // the item's lock marker goes away
+    e.requestRender()
+}
+
+@CName("xn_editor_can_paste")
+fun xnEditorCanPaste(editor: COpaquePointer?): Int = guard(0) { if (editor!!.editor().controller.hasClipboardItems()) 1 else 0 }
+
+@CName("xn_editor_paste_at")
+fun xnEditorPasteAt(editor: COpaquePointer?, x: Double, y: Double) = guard(Unit) {
+    val e = editor!!.editor()
+    e.controller.pasteItemsAt(e.state.viewportToContent(Pt(x, y)))
+}
+
+@CName("xn_editor_selection_style")
+fun xnEditorSelectionStyle(editor: COpaquePointer?, color: CPointer<UIntVar>?, width: CPointer<DoubleVar>?): Int = guard(0) {
+    val styles = editor!!.editor().controller.selectionStyles()
+    val first = styles.firstOrNull() ?: return@guard 0
+    val shared = first.color.takeIf { c -> styles.all { it.color == c } } ?: first.color
+    color?.pointed?.value = shared.packed()
+    width?.pointed?.value = first.width
+    styles.size
+}
+
+@CName("xn_editor_restyle_selection")
+fun xnEditorRestyleSelection(editor: COpaquePointer?, setColor: Int, color: UInt, setWidth: Int, width: Double, preview: Int) =
+    guard(Unit) {
+        editor!!.editor().controller.restyleSelection(
+            if (setColor != 0) unpack(color) else null,
+            if (setWidth != 0) width.coerceIn(DrawStyle.MIN_WIDTH, DrawStyle.MAX_WIDTH) else null,
+            preview != 0,
+        )
+    }
 
 @Suppress("unused")
 private fun keepImports(p: CPointer<ByteVar>?) = p?.toKString()

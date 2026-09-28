@@ -93,6 +93,8 @@ typedef struct {
     int delayed_n;
     uint64_t frames[64];
     int frames_n;
+    int menu_shown, menu_calls, context_calls;
+    char tool[32];
 } host_state;
 
 /*
@@ -169,6 +171,16 @@ static void h_frame(void* ctx, uint64_t task) {
     if (hs->frames_n < 64) hs->frames[hs->frames_n++] = task;
 }
 
+static void h_selection_menu(void* ctx, int shown, double x, double y, double w, double h) {
+    host_state* hs = ctx;
+    hs->menu_shown = shown && w > 0 && h > 0;
+    hs->menu_calls++;
+}
+static void h_context_menu(void* ctx, double x, double y, int on_locked) { ((host_state*)ctx)->context_calls++; }
+static void h_tool_changed(void* ctx, const char* tool) {
+    snprintf(((host_state*)ctx)->tool, sizeof ((host_state*)ctx)->tool, "%s", tool);
+}
+
 static xn_host make_host(host_state* hs) {
     memset(hs, 0, sizeof(*hs));
     hs->screen_target.c = &hs->screen;
@@ -180,6 +192,7 @@ static xn_host make_host(host_state* hs) {
         i_probe,
         h_render, h_content, h_view, h_notice,
         h_post, h_cancel, h_frame,
+        h_selection_menu, h_context_menu, h_tool_changed,
     };
     return h;
 }
@@ -258,6 +271,63 @@ int main(int argc, char** argv) {
     CHECK(xn_editor_can_redo(ed) == 1, "can redo");
     xn_editor_redo(ed);
     CHECK(xn_note_item_count(note, page) == 1, "redo restores it");
+
+    /* v2: selection, its menu, clipboard, restyle, lock. */
+    CHECK(strcmp(xn_editor_tool(ed), "pen") == 0, "armed tool is pen (%s)", xn_editor_tool(ed));
+    xn_editor_select_all(ed);
+    CHECK(xn_editor_has_selection(ed) == 1, "select all selects the stroke");
+    double rect[4] = {0};
+    CHECK(xn_editor_selection_rect(ed, rect) == 1 && rect[2] > 0 && rect[3] > 0, "selection rect %g %g %g %g",
+          rect[0], rect[1], rect[2], rect[3]);
+    xn_rgba color = 0;
+    double width = 0;
+    CHECK(xn_editor_selection_style(ed, &color, &width) == 1 && color == 0x102030FFu, "selection style %08x", color);
+    xn_editor_restyle_selection(ed, 1, 0xFF0000FFu, 1, 12.0, 1);
+    xn_editor_restyle_selection(ed, 1, 0x00FF00FFu, 0, 0, 1);
+    xn_editor_restyle_selection(ed, 0, 0, 0, 0, 0);
+    CHECK(xn_editor_selection_style(ed, &color, &width) == 1 && color == 0x00FF00FFu && width == 12.0,
+          "restyled %08x %g", color, width);
+    xn_editor_undo(ed);
+    CHECK(xn_editor_has_selection(ed) == 0, "undo puts the selection away");
+    xn_editor_select_all(ed);
+    CHECK(xn_editor_selection_style(ed, &color, &width) == 1 && color == 0x102030FFu, "one undo reverts the restyle");
+    xn_editor_copy(ed);
+    CHECK(xn_editor_can_paste(ed) == 1, "copied");
+    xn_editor_paste_at(ed, 300, 600);
+    CHECK(xn_note_item_count(note, page) == 2, "pasted (%d)", xn_note_item_count(note, page));
+    xn_editor_duplicate(ed);
+    CHECK(xn_note_item_count(note, page) == 3, "duplicated");
+    xn_editor_bring_to_front(ed);
+    xn_editor_cut(ed);
+    CHECK(xn_note_item_count(note, page) == 2 && xn_editor_has_selection(ed) == 0, "cut");
+    xn_editor_select_all(ed);
+    xn_editor_lock_selection(ed);
+    CHECK(xn_editor_has_selection(ed) == 0, "lock deselects");
+    xn_editor_select_all(ed);
+    CHECK(xn_editor_has_selection(ed) == 0, "locked items cannot be selected");
+    xn_editor_undo(ed); /* unlock */
+    xn_editor_undo(ed); /* uncut */
+    xn_editor_undo(ed); /* undo duplicate */
+    xn_editor_undo(ed); /* undo paste */
+    CHECK(xn_note_item_count(note, page) == 1, "undo back to one stroke (%d)", xn_note_item_count(note, page));
+    xn_editor_escape(ed);
+
+    /* v2: tool widths and shapes. */
+    xn_editor_set_tool_width(ed, "pen", 7.5);
+    CHECK(xn_editor_tool_width(ed, "pen") == 7.5, "pen width");
+    xn_editor_set_tool_width(ed, "pen", 1000);
+    CHECK(xn_editor_tool_width(ed, "pen") == XN_STYLE_MAX_WIDTH, "pen width is clamped");
+    xn_shape_style shape = {"ellipse", 4.0, 1, 0.3, 0};
+    xn_editor_set_shape_style(ed, &shape);
+    CHECK(xn_editor_set_tool(ed, "shape") == 1, "shape tool");
+    pen(ed, XN_ACTION_DOWN, 200, 500, t + 100, 0, NULL, NULL);
+    for (int i = 1; i <= 10; i++) pen(ed, XN_ACTION_MOVE, 200 + i * 10, 500 + i * 6, t + 100 + i * 8, 0, NULL, NULL);
+    pen(ed, XN_ACTION_UP, 300, 560, t + 190, 0, NULL, NULL);
+    CHECK(xn_note_item_count(note, page) == 2, "the shape was added (%d)", xn_note_item_count(note, page));
+    memset(&hs.screen, 0, sizeof(hs.screen));
+    xn_editor_paint(ed, &hs.screen_target);
+    xn_editor_undo(ed);
+    xn_editor_set_tool(ed, "pen");
 
     /* Pages and notices. */
     xn_editor_add_page(ed);

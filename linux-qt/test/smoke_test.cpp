@@ -2,6 +2,7 @@
 // tablet events and one from the mouse become items, ink reaches the screen, the note saves and
 // reopens, undo works, and every surface is released.
 #include "CanvasWidget.h"
+#include "SelectionBar.h"
 
 #include <QPointingDevice>
 #include <QTabletEvent>
@@ -218,6 +219,55 @@ private slots:
 
         canvas.setNote(nullptr);
         QCOMPARE(canvas.liveSurfaces(), 0);
+        xn_note_close(note);
+    }
+
+    /* A lasso around a stroke selects it; the bar shows over it and its actions reach the core. */
+    void lassoSelectionBar() {
+        xn_note* note = xn_note_new(1);
+        CanvasWidget canvas;
+        canvas.resize(800, 1000);
+        canvas.show();
+        canvas.setNote(note);
+        canvas.setTool("pen");
+        QTest::mousePress(&canvas, Qt::LeftButton, {}, QPoint(300, 400));
+        for (int i = 1; i <= 20; i++) QTest::mouseMove(&canvas, QPoint(300 + i * 5, 400 + (i % 4)));
+        QTest::mouseRelease(&canvas, Qt::LeftButton, {}, QPoint(400, 400));
+        QCOMPARE(xn_note_item_count(note, 0), 1);
+
+        SelectionBar bar(&canvas);
+        QSignalSpy menus(&canvas, &CanvasWidget::selectionMenu);
+        connect(&canvas, &CanvasWidget::selectionMenu, &bar, [&bar](bool shown, QRectF) { bar.onMenu(shown); });
+        canvas.setTool("lasso");
+        const QPoint loop[] = {{250, 350}, {450, 350}, {450, 450}, {250, 450}, {250, 352}};
+        QTest::mousePress(&canvas, Qt::LeftButton, {}, loop[0]);
+        for (int k = 1; k < 5; k++)
+            for (int i = 1; i <= 10; i++) QTest::mouseMove(&canvas, loop[k - 1] + (loop[k] - loop[k - 1]) * i / 10);
+        QTest::mouseRelease(&canvas, Qt::LeftButton, {}, loop[4]);
+        QVERIFY(xn_editor_has_selection(canvas.editor()));
+        QVERIFY(!menus.isEmpty() && menus.last().at(0).toBool());
+        const QRectF sel = canvas.selectionRect();
+        QVERIFY2(sel.left() > 280 && sel.right() < 420, qPrintable(QStringLiteral("%1 %2").arg(sel.left()).arg(sel.right())));
+        QVERIFY(bar.isVisible());
+        QVERIFY(bar.geometry().bottom() < sel.top() || bar.geometry().top() > sel.bottom());
+
+        xn_editor_duplicate(canvas.editor());
+        QCOMPARE(xn_note_item_count(note, 0), 2);
+        xn_editor_delete_selection(canvas.editor());
+        QCOMPARE(xn_note_item_count(note, 0), 1);
+        QVERIFY(!xn_editor_has_selection(canvas.editor()));
+        QVERIFY(!bar.isVisible());
+
+        // A shape drawn with the mouse.
+        const xn_shape_style style{"rectangle", 4.0, 1, 0.3, 0};
+        xn_editor_set_shape_style(canvas.editor(), &style);
+        canvas.setTool("shape");
+        QTest::mousePress(&canvas, Qt::LeftButton, {}, QPoint(200, 600));
+        for (int i = 1; i <= 10; i++) QTest::mouseMove(&canvas, QPoint(200 + i * 20, 600 + i * 10));
+        QTest::mouseRelease(&canvas, Qt::LeftButton, {}, QPoint(400, 700));
+        QCOMPARE(xn_note_item_count(note, 0), 2);
+
+        canvas.setNote(nullptr);
         xn_note_close(note);
     }
 

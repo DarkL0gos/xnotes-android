@@ -1,5 +1,5 @@
 /*
- * xnotes core — C API (v1).
+ * xnotes core — C API (v2).
  *
  * The Kotlin/Native build of the xnotes core (libxnotes.so) behind a small C interface for native
  * hosts such as the Qt application. The core keeps the document model, file formats, the paged
@@ -25,7 +25,7 @@
 extern "C" {
 #endif
 
-#define XN_API_VERSION 1
+#define XN_API_VERSION 2
 
 typedef uint32_t xn_rgba; /* 0xRRGGBBAA */
 
@@ -135,6 +135,18 @@ typedef struct xn_host {
     void (*cancel_task)(void* ctx, uint64_t task);
     /* Run the task on the next display frame (animations: fling, fade). */
     void (*post_frame)(void* ctx, uint64_t task);
+
+    /* --- v2. Each of these may be NULL. --- */
+
+    /* A selection settled (shown = 1, with its viewport rect, for a floating action bar next to
+       it) or went away (shown = 0). Only its position changes while the view scrolls; see
+       xn_editor_selection_rect. */
+    void (*selection_menu)(void* ctx, int shown, double x, double y, double w, double h);
+    /* A long press on empty space, or on a locked item (on_locked = 1): offer a context menu at
+       the viewport point (paste; unlock with xn_editor_unlock_pressed). */
+    void (*context_menu)(void* ctx, double x, double y, int on_locked);
+    /* The editor switched tools by itself (a long-press grab, and back). */
+    void (*tool_changed)(void* ctx, const char* tool_id);
 } xn_host;
 
 /* --- library -------------------------------------------------------------------------------- */
@@ -225,6 +237,58 @@ int xn_editor_can_undo(const xn_editor* editor);
 int xn_editor_can_redo(const xn_editor* editor);
 void xn_editor_escape(xn_editor* editor);
 void xn_editor_delete_selection(xn_editor* editor);
+
+/* The armed tool's id (a static string). */
+const char* xn_editor_tool(const xn_editor* editor);
+
+/* Base width of a drawing tool's ink ("pen", "highlighter", ...), in page pixels. */
+double xn_editor_tool_width(const xn_editor* editor, const char* tool_id);
+void xn_editor_set_tool_width(xn_editor* editor, const char* tool_id, double width);
+
+/* What the "shape" tool draws. kind: "line", "arrow", "rectangle", "ellipse", "circle", "triangle". */
+typedef struct xn_shape_style {
+    const char* kind;
+    double width;      /* outline, page pixels */
+    int fill;          /* closed shapes: fill with the ink colour at fill_alpha */
+    double fill_alpha; /* 0.05..1 */
+    int dashed;
+} xn_shape_style;
+void xn_editor_set_shape_style(xn_editor* editor, const xn_shape_style* style);
+
+/* --- selection (lasso, select, long-press grab) --- */
+
+int xn_editor_has_selection(const xn_editor* editor);
+/* The selection's current viewport rect (x, y, w, h) for anchoring its menu; 0 when none. */
+int xn_editor_selection_rect(const xn_editor* editor, double* out_xywh);
+void xn_editor_select_all(xn_editor* editor);
+void xn_editor_cut(xn_editor* editor);
+void xn_editor_copy(xn_editor* editor);
+void xn_editor_duplicate(xn_editor* editor);
+void xn_editor_bring_to_front(xn_editor* editor);
+/* Pin the selection in place (it can no longer be selected) and deselect it. */
+void xn_editor_lock_selection(xn_editor* editor);
+/* Release the locked item the last context_menu (on_locked = 1) was opened for. */
+void xn_editor_unlock_pressed(xn_editor* editor);
+/* Whether copied items wait to be pasted (the core's own clipboard, within this editor). */
+int xn_editor_can_paste(const xn_editor* editor);
+/* Paste the copied items with their top-left at the viewport point, and select them. */
+void xn_editor_paste_at(xn_editor* editor, double x, double y);
+
+/* Width range of a restyle, in page pixels. */
+#define XN_STYLE_MIN_WIDTH 1.0
+#define XN_STYLE_MAX_WIDTH 80.0
+/*
+ * The colour and width the selection's strokes and shapes share (else the first one's). Returns
+ * how many selected items carry such a style: 0 when nothing selected can be restyled.
+ */
+int xn_editor_selection_style(const xn_editor* editor, xn_rgba* color, double* width);
+/*
+ * Recolour (set_color) and/or re-thicken (set_width) the selection. A preview call skips history;
+ * the next call without it records everything since as one undo step (a slider drag), and a call
+ * with neither set and preview = 0 just settles a pending preview.
+ */
+void xn_editor_restyle_selection(xn_editor* editor, int set_color, xn_rgba color, int set_width, double width,
+                                 int preview);
 
 /* --- view --- */
 

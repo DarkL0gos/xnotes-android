@@ -81,6 +81,10 @@ public:
     std::function<void()> onContentChanged;
     std::function<void()> onViewChanged;
     std::function<void(int)> onNotice;
+    /* v2: a settled selection's viewport rect (device px), or shown = false. */
+    std::function<void(bool, QRectF)> onSelectionMenu;
+    std::function<void(QPointF, bool)> onContextMenu;
+    std::function<void(QString)> onToolChanged;
 
     int liveSurfaces() const { return liveSurfaces_; }
 
@@ -110,6 +114,9 @@ private:
     static void postDelayed(void* ctx, uint64_t task, int64_t delayMs);
     static void cancelTask(void* ctx, uint64_t task);
     static void postFrame(void* ctx, uint64_t task);
+    static void selectionMenu(void* ctx, int shown, double x, double y, double w, double h);
+    static void contextMenu(void* ctx, double x, double y, int onLocked);
+    static void toolChanged(void* ctx, const char* toolId);
 
     void schedule(uint64_t task, int delayMs);
 };

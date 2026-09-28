@@ -326,6 +326,9 @@ CoreHost::CoreHost() {
     host_.post_delayed = postDelayed;
     host_.cancel_task = cancelTask;
     host_.post_frame = postFrame;
+    host_.selection_menu = selectionMenu;
+    host_.context_menu = contextMenu;
+    host_.tool_changed = toolChanged;
 }
 
 CoreHost::~CoreHost() {
@@ -427,5 +430,17 @@ void CoreHost::cancelTask(void* ctx, uint64_t task) {
 }
 
 void CoreHost::postFrame(void* ctx, uint64_t task) { H(ctx)->schedule(task, 16); }
+
+void CoreHost::selectionMenu(void* ctx, int shown, double x, double y, double w, double h) {
+    if (H(ctx)->onSelectionMenu) H(ctx)->onSelectionMenu(shown != 0, QRectF(x, y, w, h));
+}
+
+void CoreHost::contextMenu(void* ctx, double x, double y, int onLocked) {
+    if (H(ctx)->onContextMenu) H(ctx)->onContextMenu(QPointF(x, y), onLocked != 0);
+}
+
+void CoreHost::toolChanged(void* ctx, const char* toolId) {
+    if (H(ctx)->onToolChanged) H(ctx)->onToolChanged(QString::fromUtf8(toolId));
+}
 
 }  // namespace xn

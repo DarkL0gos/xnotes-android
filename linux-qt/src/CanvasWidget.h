@@ -28,6 +28,10 @@ public:
     xn_editor* editor() const { return editor_; }
 
     void setTool(const char* toolId);
+    /* The selection's current rect in widget coordinates, or an empty rect. */
+    QRectF selectionRect() const;
+    /* A widget point in the core's device pixels. */
+    QPointF toDevice(QPointF widget) const { return widget * dpr_; }
     void setDark(bool dark);
 
     /* Statistics for the smoke test and the status bar. */
@@ -41,6 +45,11 @@ signals:
     void contentChanged();
     void viewChanged();
     void notice(int code);
+    /* The selection's menu: shown at rect (widget coordinates), or hidden. */
+    void selectionMenu(bool shown, QRectF rect);
+    /* A long press asked for a context menu at a widget point; onLocked: over a locked item. */
+    void contextMenu(QPointF at, bool onLocked);
+    void toolChanged(QString toolId);
 
 protected:
     bool event(QEvent* e) override;

@@ -4,13 +4,16 @@
 #include "xnotes.h"
 
 #include <QActionGroup>
+#include <QHash>
 #include <QMainWindow>
 #include <QTemporaryDir>
 
 #include <memory>
 
 class CanvasWidget;
+class QDoubleSpinBox;
 class QLabel;
+class SelectionBar;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -38,6 +41,13 @@ private:
     QLabel* zoomLabel_;
     QLabel* inputLabel_;
     bool dark_ = true;
+    SelectionBar* selectionBar_;
+    QDoubleSpinBox* width_;
+    bool syncingWidth_ = false;
+    QHash<QByteArray, double> widths_;
+    QByteArray shapeKind_ = "rectangle";
+    bool shapeFill_ = false;
+    bool shapeDashed_ = false;
 
     void install(xn_note* note, std::unique_ptr<QTemporaryDir> workDir, const QString& path);
     void buildUi();
@@ -48,4 +58,11 @@ private:
     bool confirmDiscard();
     void chooseColor();
     void setInk(const QColor& c);
+    QByteArray currentTool() const;
+    void syncWidth();
+    void applyShape();
+    void applyToolSettings();
+    void pasteAt(QPointF widget);
+    void selectAll();
+    void showContextMenu(QPointF at, bool onLocked);
 };

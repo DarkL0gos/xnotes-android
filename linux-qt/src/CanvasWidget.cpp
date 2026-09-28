@@ -41,6 +41,14 @@ CanvasWidget::CanvasWidget(QWidget* parent) : QWidget(parent) {
     core_.onContentChanged = [this] { emit contentChanged(); };
     core_.onViewChanged = [this] { update(); emit viewChanged(); };
     core_.onNotice = [this](int code) { emit notice(code); };
+    core_.onSelectionMenu = [this](bool shown, QRectF r) {
+        emit selectionMenu(shown, QRectF(r.topLeft() / dpr_, r.size() / dpr_));
+    };
+    core_.onContextMenu = [this](QPointF at, bool locked) { emit contextMenu(at / dpr_, locked); };
+    core_.onToolChanged = [this](QString id) {
+        setCursor(id == QLatin1String("pan") ? Qt::OpenHandCursor : Qt::CrossCursor);
+        emit toolChanged(id);
+    };
 }
 
 CanvasWidget::~CanvasWidget() { setNote(nullptr); }
@@ -62,6 +70,12 @@ void CanvasWidget::setTool(const char* toolId) {
     if (!editor_) return;
     xn_editor_set_tool(editor_, toolId);
     setCursor(qstrcmp(toolId, "pan") == 0 ? Qt::OpenHandCursor : Qt::CrossCursor);
+}
+
+QRectF CanvasWidget::selectionRect() const {
+    double r[4];
+    if (!editor_ || !xn_editor_selection_rect(editor_, r)) return {};
+    return QRectF(r[0] / dpr_, r[1] / dpr_, r[2] / dpr_, r[3] / dpr_);
 }
 
 void CanvasWidget::setDark(bool dark) {

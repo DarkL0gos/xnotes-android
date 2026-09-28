@@ -2389,8 +2389,12 @@ class InteractionController(
 
     /** Show the selection menu when a selection is settled (idle), else hide it. */
     private fun refreshSelectionMenu() {
-        onSelectionMenu(if (selection.isNotEmpty() && mode == PointerMode.IDLE) selectionBoundsViewport() else null)
+        onSelectionMenu(selectionMenuRect())
     }
+
+    /** Where the selection menu anchors now (viewport px), or null while there is no settled selection. */
+    fun selectionMenuRect(): Rect? =
+        if (selection.isNotEmpty() && mode == PointerMode.IDLE) selectionBoundsViewport() else null
 
     private fun selectionBoundsViewport(): Rect? {
         val content = selectionBoundsContent() ?: return null
