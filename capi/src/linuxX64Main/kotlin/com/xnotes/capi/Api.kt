@@ -387,3 +387,8 @@ fun xnEditorDeleteCurrentPage(editor: COpaquePointer?) = guard(Unit) { editor!!.
 
 @Suppress("unused")
 private fun keepImports(p: CPointer<ByteVar>?) = p?.toKString()
+
+/** Test-only (not in xnotes.h): a full collection, so tests can make cleaners run. */
+@OptIn(kotlin.native.runtime.NativeRuntimeApi::class)
+@CName("xn_test_collect_garbage")
+fun xnTestCollectGarbage() = guard(Unit) { kotlin.native.runtime.GC.collect() }

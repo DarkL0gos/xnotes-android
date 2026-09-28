@@ -25,6 +25,7 @@ import com.xnotes.core.pal.Renderer
 import com.xnotes.core.pal.SurfaceFactory
 import com.xnotes.core.pal.TextFlags
 import com.xnotes.core.pal.TextMeasurer
+import com.xnotes.core.platform.IdCounter
 import com.xnotes.core.platform.Lock
 import com.xnotes.core.platform.Runnable
 import com.xnotes.core.platform.withLock
@@ -211,13 +212,23 @@ internal class CSurface(
     override val height: Int,
     override val devicePixelRatio: Double,
 ) : RasterSurface {
+    /**
+     * This surface's own number. The host's handle is an address, which the host may hand out again
+     * once the surface is released: a cleaner keyed by it would release whatever lives there by then.
+     */
+    private val id = factory.nextId()
+
+    init {
+        factory.register(id, handle)
+    }
+
     /** Queues the host surface for release once this object is collected; see [CSurfaceFactory]. */
     @Suppress("unused")
-    private val cleaner = createCleaner(factory to handle.toLong()) { (f, raw) -> f.collected(raw) }
+    private val cleaner = createCleaner(factory to id) { (f, id) -> f.collected(id) }
 
     override fun fill(color: Rgba) = host.surface_fill!!.invoke(host.ctx, handle, color.packed())
     override fun renderer(): Renderer = CRenderer(host.renderer!!.pointed, host.surface_renderer!!.invoke(host.ctx, handle))
-    override fun recycle() = factory.release(handle.toLong())
+    override fun recycle() = factory.release(id)
 }
 
 /**
@@ -227,25 +238,32 @@ internal class CSurface(
  */
 internal class CSurfaceFactory(private val host: xn_host) : SurfaceFactory {
     private val lock = Lock()
-    private val live = HashSet<Long>()
+    private val ids = IdCounter()
+
+    /** Surface number → host handle, for every surface not yet released. */
+    private val live = HashMap<Long, Long>()
     private val collected = ArrayList<Long>()
     private var disposed = false
 
     override fun create(widthPx: Int, heightPx: Int, devicePixelRatio: Double): RasterSurface {
         val handle = host.surface_create!!.invoke(host.ctx, widthPx, heightPx, devicePixelRatio)
-        withLock(lock) { live.add(handle.toLong()) }
         return CSurface(host, this, handle, widthPx, heightPx, devicePixelRatio)
     }
 
+    fun nextId(): Long = ids.next()
+
+    fun register(id: Long, handle: COpaquePointer?) = withLock(lock) { live[id] = handle.toLong() }
+
     /** From a cleaner, on whatever thread the GC runs it: only queue. */
-    fun collected(raw: Long) = withLock(lock) {
-        if (!disposed && live.remove(raw)) collected.add(raw)
+    fun collected(id: Long) = withLock(lock) {
+        val raw = live.remove(id)
+        if (!disposed && raw != null) collected.add(raw)
     }
 
     /** UI thread: release a surface the core is done with. */
-    fun release(raw: Long) {
-        val owned = withLock(lock) { live.remove(raw) }
-        if (owned) host.surface_release!!.invoke(host.ctx, raw.toCPointer())
+    fun release(id: Long) {
+        val raw = withLock(lock) { live.remove(id) } ?: return
+        host.surface_release!!.invoke(host.ctx, raw.toCPointer())
     }
 
     /** UI thread: release what the GC collected since the last call. */
@@ -258,7 +276,7 @@ internal class CSurfaceFactory(private val host: xn_host) : SurfaceFactory {
     fun dispose() {
         val due = withLock(lock) {
             disposed = true
-            (live + collected).also {
+            (live.values + collected).also {
                 live.clear()
                 collected.clear()
             }

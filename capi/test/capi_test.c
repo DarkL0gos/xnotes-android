@@ -1,3 +1,4 @@
+#define _DEFAULT_SOURCE /* usleep */
 /*
  * Drives libxnotes.so through xnotes.h alone, the way the Qt host will: a recording renderer and
  * host, a pen stroke, undo/redo, save and reopen, and error reporting.
@@ -8,6 +9,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+
+/* Test-only export: run a full garbage collection (cleaners follow on their own thread). */
+void xn_test_collect_garbage(void);
 
 static int failures = 0;
 #define CHECK(cond, ...)                                                   \
@@ -55,7 +60,11 @@ static void r_fill_disk_ribbon(void* r, const float* centers, const float* radii
 static void r_stroke_polyline(void* r, const double* xy, int n, int closed, const xn_pen* p) { ((target*)r)->c->strokes++; }
 static void r_stroke_rect(void* r, double x, double y, double w, double h, const xn_pen* p) { ((target*)r)->c->strokes++; }
 static void r_stroke_ellipse(void* r, double cx, double cy, double rx, double ry, const xn_pen* p) { ((target*)r)->c->strokes++; }
-static void r_draw_surface(void* r, void* s, const double* d, const double* src, double a, int b) { ((target*)r)->c->surfaces++; }
+static void s_check(void* s);
+static void r_draw_surface(void* r, void* s, const double* d, const double* src, double a, int b) {
+    s_check(s);
+    ((target*)r)->c->surfaces++;
+}
 static void r_draw_image(void* r, const char* path, double x, double y, double w, double h, int o, double a) {}
 static void r_draw_text(void* r, const uint16_t* t, int n, double x, double y, double w, double h, const xn_font* f,
                         xn_rgba c, int ww, int al, int at) { ((target*)r)->c->texts++; }
@@ -86,23 +95,47 @@ typedef struct {
     int frames_n;
 } host_state;
 
+/*
+ * Surfaces are never freed while the test runs: a released one goes on a stack and the next
+ * create hands the same address out again, as malloc tends to. Any use of a released surface,
+ * or a second release, is counted, so a core that tracks surfaces by address gets caught.
+ */
 typedef struct {
-    int w, h;
+    int w, h, alive;
 } surface;
+
+static surface* spare[4096];
+static int spare_n;
+static int stale_uses, double_releases, creates, reuses;
 
 static void* s_create(void* ctx, int w, int h, double dpr) {
     host_state* hs = ctx;
     hs->surfaces_live++;
-    surface* s = malloc(sizeof(surface));
+    creates++;
+    if (spare_n > 0) reuses++;
+    surface* s = spare_n > 0 ? spare[--spare_n] : malloc(sizeof(surface));
     s->w = w;
     s->h = h;
+    s->alive = 1;
     return s;
 }
-static void s_fill(void* ctx, void* s, xn_rgba c) {}
-static void* s_renderer(void* ctx, void* s) { return &((host_state*)ctx)->surface_target; }
+static void s_check(void* s) {
+    if (!((surface*)s)->alive) stale_uses++;
+}
+static void s_fill(void* ctx, void* s, xn_rgba c) { s_check(s); }
+static void* s_renderer(void* ctx, void* s) {
+    s_check(s);
+    return &((host_state*)ctx)->surface_target;
+}
 static void s_release(void* ctx, void* s) {
+    surface* sf = s;
+    if (!sf->alive) {
+        double_releases++;
+        return;
+    }
     ((host_state*)ctx)->surfaces_live--;
-    free(s);
+    sf->alive = 0;
+    if (spare_n < 4096) spare[spare_n++] = sf;
 }
 static void t_measure(void* ctx, const uint16_t* t, int n, const xn_font* f, double wrap, int ww, double* out) {
     out[0] = 0;
@@ -263,9 +296,41 @@ int main(int argc, char** argv) {
     for (int i = 0; i < hs.frames_n; i++) xn_editor_run_task(ed, hs.frames[i]);
     xn_editor_run_task(ed, 999999); /* unknown ids are ignored */
 
+    /*
+     * Long strokes grow the wet-ink surface (a new one, the old recycled) and zooms rebuild page
+     * caches, while the GC collects the dropped surface objects. Released addresses come back
+     * from s_create, so a collected object must not release the surface now living there.
+     */
+    for (int round = 0; round < 12; round++) {
+        int64_t t2 = 100000 + round * 10000;
+        float y = 150 + round * 50;
+        pen(ed, XN_ACTION_DOWN, 100, y, t2, 0, NULL, NULL);
+        for (int step = 1; step <= 150; step++) {
+            pen(ed, XN_ACTION_MOVE, 100 + step * 4, y + (step % 7), t2 + step * 4, 0, NULL, NULL);
+            if (step % 5 == 0) xn_editor_paint(ed, &hs.screen_target);
+        }
+        pen(ed, XN_ACTION_UP, 700, y, t2 + 604, 0, NULL, NULL);
+        xn_editor_zoom_at(ed, 400, 500, round % 2 ? 0.8 : 1.25);
+        xn_editor_paint(ed, &hs.screen_target);
+        for (int i = 0; i < hs.delayed_n; i++)
+            if (hs.delayed[i]) xn_editor_run_task(ed, hs.delayed[i]); /* sharp re-render: new caches */
+        hs.delayed_n = 0;
+        xn_editor_paint(ed, &hs.screen_target);
+        if (round % 3 == 2) { /* rarely, so released addresses are handed out again before it */
+            xn_test_collect_garbage();
+            usleep(30000);
+            xn_editor_paint(ed, &hs.screen_target);
+            xn_editor_paint(ed, &hs.screen_target);
+        }
+    }
+    CHECK(reuses > 0, "released addresses were handed out again (%d of %d)", reuses, creates);
+    CHECK(stale_uses == 0, "no released surface is used (%d uses)", stale_uses);
+    CHECK(double_releases == 0, "no surface is released twice (%d)", double_releases);
+
     CHECK(hs.surfaces_live > 0, "page caches were live while editing");
     xn_editor_destroy(ed);
     CHECK(hs.surfaces_live == 0, "destroy releases every surface (%d left)", hs.surfaces_live);
+    CHECK(stale_uses == 0 && double_releases == 0, "teardown is clean (%d stale, %d double)", stale_uses, double_releases);
     xn_note_close(note);
 
     if (failures) {

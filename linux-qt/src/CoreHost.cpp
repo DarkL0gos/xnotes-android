@@ -404,11 +404,12 @@ void CoreHost::viewChanged(void* ctx) { if (H(ctx)->onViewChanged) H(ctx)->onVie
 void CoreHost::notice(void* ctx, int code) { if (H(ctx)->onNotice) H(ctx)->onNotice(code); }
 
 void CoreHost::schedule(uint64_t task, int delayMs) {
+    cancelTask(this, task);  // posted again: the new time replaces the old
     auto* timer = new QTimer;
     timer->setSingleShot(true);
     timer->setTimerType(Qt::PreciseTimer);
     QObject::connect(timer, &QTimer::timeout, [this, task, timer] {
-        timers_.remove(task);
+        if (timers_.value(task) == timer) timers_.remove(task);
         timer->deleteLater();
         if (runTask) runTask(task);
     });
