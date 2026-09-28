@@ -26,9 +26,10 @@ namespace xn {
  */
 class PainterTarget {
 public:
-    explicit PainterTarget(QPainter* painter) : base_(painter) {}
+    /* Draws with painter; with resumeOn, a painter that was ended starts again on that image. */
+    explicit PainterTarget(QPainter* painter, QImage* resumeOn = nullptr) : base_(painter), image_(resumeOn) {}
 
-    QPainter* painter() const { return layers_.empty() ? base_ : layers_.back().painter.get(); }
+    QPainter* painter();
     void save();
     void restore();
     void saveLayer(const QRectF& bounds, double alpha, int blend);
@@ -42,18 +43,25 @@ private:
         int blend;
     };
     QPainter* base_;
+    QImage* image_;
     std::vector<Layer> layers_;
     std::vector<bool> saveIsLayer_;
 };
 
-/* A page cache surface: an image, and the painter currently drawing into it (if any). */
+/*
+ * A cache surface: an image and the one renderer drawing into it. The core may keep that renderer
+ * across frames, drawing into the surface after it was read, so reading ends the painter and the
+ * next drawing call begins it again.
+ */
 struct Surface {
     QImage image;
-    std::unique_ptr<QPainter> painter;
-    std::unique_ptr<PainterTarget> target;
+    QPainter painter;
+    PainterTarget target{&painter, &image};
 
-    /* Finish pending drawing so the image can be read. */
+    /* Finish pending drawing so the image can be read or filled. */
     void endPainting();
+    /* Start over: identity transform, no clip. */
+    PainterTarget* restart();
 };
 
 /*

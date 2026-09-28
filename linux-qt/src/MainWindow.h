@@ -36,6 +36,7 @@ private:
     QActionGroup* tools_;
     QLabel* pageLabel_;
     QLabel* zoomLabel_;
+    QLabel* inputLabel_;
     bool dark_ = true;
 
     void install(xn_note* note, std::unique_ptr<QTemporaryDir> workDir, const QString& path);

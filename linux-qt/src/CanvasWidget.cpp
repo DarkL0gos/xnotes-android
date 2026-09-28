@@ -120,6 +120,12 @@ void CanvasWidget::paintEvent(QPaintEvent*) {
 
 void CanvasWidget::send(int action, int actionIndex, int buttons, const std::vector<xn_pointer>& pointers, bool hover) {
     if (!editor_ || pointers.empty()) return;
+    if (!hover) {
+        const int type = pointers.front().tool_type;
+        lastInput_ = type == XN_TOOL_TYPE_STYLUS ? QStringLiteral("перо") : type == XN_TOOL_TYPE_ERASER ? QStringLiteral("ластик")
+                   : type == XN_TOOL_TYPE_FINGER ? QStringLiteral("касание") : QStringLiteral("мышь");
+        lastPressure_ = pointers.front().pressure;
+    }
     xn_pointer_event ev{};
     ev.action = action;
     ev.action_index = actionIndex;

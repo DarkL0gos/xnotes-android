@@ -33,6 +33,9 @@ public:
     /* Statistics for the smoke test and the status bar. */
     int liveSurfaces() const { return core_.liveSurfaces(); }
     double lastFrameMs() const { return lastFrameMs_; }
+    /* What drew last: "перо", "ластик", "мышь" or "касание", and the pen's pressure. */
+    QString lastInput() const { return lastInput_; }
+    double lastPressure() const { return lastPressure_; }
 
 signals:
     void contentChanged();
@@ -56,6 +59,8 @@ private:
     QImage frame_;
     double dpr_ = 1.0;
     double lastFrameMs_ = 0;
+    QString lastInput_;
+    double lastPressure_ = 0;
     bool penDown_ = false;
     bool mouseDown_ = false;
     QPointF panFrom_;

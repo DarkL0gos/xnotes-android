@@ -12,6 +12,7 @@
 #include <QPainter>
 #include <QPixmap>
 #include <QStatusBar>
+#include <QTimer>
 #include <QToolBar>
 
 namespace {
@@ -49,6 +50,16 @@ MainWindow::MainWindow() {
                                  : code == XN_NOTICE_PAGE_ALREADY_EMPTY ? QStringLiteral("Страница уже пуста")
                                                                         : QString(), 4000);
     });
+    // Input and speed, for checking a tablet: whether Qt reports it as a pen with pressure.
+    inputLabel_ = new QLabel(this);
+    statusBar()->addPermanentWidget(inputLabel_);
+    auto* stats = new QTimer(this);
+    connect(stats, &QTimer::timeout, this, [this] {
+        const QString input = canvas_->lastInput();
+        inputLabel_->setText((input.isEmpty() ? QString() : QStringLiteral("ввод: %1, давление %2   ").arg(input).arg(canvas_->lastPressure(), 0, 'f', 2)) +
+                             QStringLiteral("кадр %1 мс").arg(canvas_->lastFrameMs(), 0, 'f', 1));
+    });
+    stats->start(250);
     resize(1200, 900);
 }
 

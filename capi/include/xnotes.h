@@ -105,7 +105,10 @@ typedef struct xn_host {
     void* (*surface_create)(void* ctx, int width, int height, double device_pixel_ratio);
     void (*surface_fill)(void* ctx, void* surface, xn_rgba c);
     /* A renderer drawing into the surface, with an identity transform and no clip, fresh per call.
-       It stays valid until the surface is next drawn with draw_surface or released. */
+       It stays valid until the surface is released, and the core may keep drawing into it after
+       the surface was drawn or filled (the wet-ink cache adds to its surface every frame): a host
+       that has to finish drawing before reading the pixels (QPainter::end) resumes on the next
+       call through the renderer. */
     void* (*surface_renderer)(void* ctx, void* surface);
     void (*surface_release)(void* ctx, void* surface);
 

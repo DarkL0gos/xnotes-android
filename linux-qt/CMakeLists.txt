@@ -50,6 +50,7 @@ target_link_libraries(xnotes-qt PRIVATE xnotes_host)
 
 enable_testing()
 add_executable(xnotes_qt_smoke test/smoke_test.cpp)
-target_link_libraries(xnotes_qt_smoke PRIVATE xnotes_host Qt6::Test)
+find_package(ZLIB REQUIRED)
+target_link_libraries(xnotes_qt_smoke PRIVATE xnotes_host Qt6::Test ZLIB::ZLIB)
 add_test(NAME smoke COMMAND xnotes_qt_smoke)
 set_tests_properties(smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

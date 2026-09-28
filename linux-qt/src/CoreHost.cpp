@@ -12,6 +12,22 @@ namespace xn {
 
 // --- layers ------------------------------------------------------------------------------------
 
+namespace {
+constexpr QPainter::RenderHints kHints = QPainter::Antialiasing | QPainter::SmoothPixmapTransform | QPainter::TextAntialiasing;
+}
+
+QPainter* PainterTarget::painter() {
+    if (!layers_.empty()) return layers_.back().painter.get();
+    if (image_ && !base_->isActive()) {
+        // Resumed after the surface was read: the core's save/transform state does not span that,
+        // since it only keeps a renderer between whole drawing passes.
+        saveIsLayer_.clear();
+        base_->begin(image_);
+        base_->setRenderHints(kHints);
+    }
+    return base_;
+}
+
 void PainterTarget::save() {
     painter()->save();
     saveIsLayer_.push_back(false);
@@ -62,7 +78,13 @@ void PainterTarget::restore() {
 }
 
 void Surface::endPainting() {
-    if (painter && painter->isActive()) painter->end();
+    if (painter.isActive()) painter.end();
+}
+
+PainterTarget* Surface::restart() {
+    endPainting();
+    target = PainterTarget(&painter, &image);
+    return &target;
 }
 
 // --- the renderer vtable -------------------------------------------------------------------------
@@ -324,14 +346,7 @@ void CoreHost::surfaceFill(void*, void* surface, xn_rgba c) {
     s->image.fill(toColor(c));
 }
 
-void* CoreHost::surfaceRenderer(void*, void* surface) {
-    auto* s = static_cast<Surface*>(surface);
-    s->endPainting();
-    s->painter = std::make_unique<QPainter>(&s->image);
-    s->painter->setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform | QPainter::TextAntialiasing);
-    s->target = std::make_unique<PainterTarget>(s->painter.get());
-    return s->target.get();
-}
+void* CoreHost::surfaceRenderer(void*, void* surface) { return static_cast<Surface*>(surface)->restart(); }
 
 void CoreHost::surfaceRelease(void* ctx, void* surface) {
     auto* s = static_cast<Surface*>(surface);

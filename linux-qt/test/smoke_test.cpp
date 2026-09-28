@@ -6,7 +6,41 @@
 #include <QPointingDevice>
 #include <QTabletEvent>
 #include <QTemporaryDir>
+#include <QSignalSpy>
+#include <QWheelEvent>
 #include <QtTest>
+
+#include <zlib.h>
+
+/* A minimal .xnote: one stored manifest entry. */
+static bool writeNote(const QString& path, const QByteArray& manifest) {
+    const QByteArray name("manifest.json");
+    const quint32 crc = quint32(crc32(0, reinterpret_cast<const Bytef*>(manifest.constData()), uInt(manifest.size())));
+    QByteArray local, central, end;
+    auto u16 = [](QByteArray& b, quint16 v) { b.append(char(v & 0xff)).append(char(v >> 8)); };
+    auto u32 = [&](QByteArray& b, quint32 v) { u16(b, quint16(v)); u16(b, quint16(v >> 16)); };
+    u32(local, 0x04034b50); u16(local, 10); u16(local, 0); u16(local, 0); u16(local, 0); u16(local, 0x21);
+    u32(local, crc); u32(local, quint32(manifest.size())); u32(local, quint32(manifest.size()));
+    u16(local, quint16(name.size())); u16(local, 0);
+    local += name + manifest;
+    u32(central, 0x02014b50); u16(central, 20); u16(central, 10); u16(central, 0); u16(central, 0); u16(central, 0);
+    u16(central, 0x21); u32(central, crc); u32(central, quint32(manifest.size())); u32(central, quint32(manifest.size()));
+    u16(central, quint16(name.size())); u16(central, 0); u16(central, 0); u16(central, 0); u16(central, 0); u32(central, 0);
+    u32(central, 0);
+    central += name;
+    u32(end, 0x06054b50); u16(end, 0); u16(end, 0); u16(end, 1); u16(end, 1);
+    u32(end, quint32(central.size())); u32(end, quint32(local.size())); u16(end, 0);
+    QFile f(path);
+    return f.open(QIODevice::WriteOnly) && f.write(local + central + end) > 0;
+}
+
+/* QTest::wheelEvent does not exist; a wheel notch as a mouse produces it. */
+namespace QTest {
+inline void wheelEvent(QWidget* w, QPointF at, QPoint angle) {
+    QWheelEvent e(at, w->mapToGlobal(at), QPoint(), angle, Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(w, &e);
+}
+}  // namespace QTest
 
 class SmokeTest : public QObject {
     Q_OBJECT
@@ -57,20 +91,27 @@ private slots:
         xn_editor_zoom_at(canvas.editor(), 400, 300, 4.0);
         QCoreApplication::processEvents();
 
-        // A horizontal pen stroke with rising pressure.
+        // A long horizontal pen stroke with rising pressure. Past ~48 points its settled part goes
+        // into the wet-ink surface, which keeps being drawn into while it is shown: all of the ink
+        // so far must stay on screen mid-stroke.
         tablet(&canvas, QEvent::TabletPress, {200, 300}, 0.2, Qt::LeftButton, Qt::LeftButton);
-        for (int i = 1; i <= 40; i++)
-            tablet(&canvas, QEvent::TabletMove, {200.0 + i * 10, 300}, 0.2 + i * 0.02, Qt::NoButton, Qt::LeftButton);
-        tablet(&canvas, QEvent::TabletRelease, {600, 300}, 0, Qt::LeftButton, Qt::NoButton);
+        for (int i = 1; i <= 120; i++) {
+            tablet(&canvas, QEvent::TabletMove, {200.0 + i * 3, 300}, 0.2 + i * 0.006, Qt::NoButton, Qt::LeftButton);
+            if (i == 70 || i == 120) {
+                const int head = 200 + i * 3 - 12;
+                QCOMPARE(inkPixels(grab(canvas), QRect(210, 300, head - 210, 1)), head - 210);
+            }
+        }
+        tablet(&canvas, QEvent::TabletRelease, {560, 300}, 0, Qt::LeftButton, Qt::NoButton);
         QCOMPARE(xn_note_item_count(note, 0), 1);
         QVERIFY(xn_note_is_dirty(note));
         QVERIFY(xn_editor_can_undo(canvas.editor()));
 
         QImage shot = grab(canvas);
         if (qEnvironmentVariableIsSet("XNOTES_SMOKE_SHOT")) shot.save(qEnvironmentVariable("XNOTES_SMOKE_SHOT"));
-        QCOMPARE(inkPixels(shot, QRect(210, 300, 380, 1)), 380);  // solid along its middle
-        QVERIFY2(inkPixels(shot, QRect(210, 290, 380, 20)) > 380 * 4, "the stroke is several pixels wide");
-        QCOMPARE(inkPixels(shot, QRect(210, 500, 380, 20)), 0);
+        QCOMPARE(inkPixels(shot, QRect(210, 300, 340, 1)), 340);  // solid along its middle
+        QVERIFY2(inkPixels(shot, QRect(210, 290, 340, 20)) > 340 * 4, "the stroke is several pixels wide");
+        QCOMPARE(inkPixels(shot, QRect(210, 500, 340, 20)), 0);
         QVERIFY(canvas.lastFrameMs() >= 0);
 
         // A diagonal mouse stroke.
@@ -108,6 +149,44 @@ private slots:
         canvas.setNote(nullptr);
         QCOMPARE(canvas.liveSurfaces(), 0);
         xn_note_close(reopened);
+    }
+
+    /* Scrolling and zooming from the host repaint and report the view; pages are ruled; the palette switches. */
+    void viewRulingAndPalette() {
+        QTemporaryDir dir;
+        const QString path = dir.filePath(QStringLiteral("lined.xnote"));
+        QVERIFY(writeNote(path, R"({"format":"xnote","version":1,"dpi":150,"style":{"pattern":"lines"},)"
+                                R"("pages":[{"width":1240.0,"height":1754.0,"items":[]},{"width":1240.0,"height":1754.0,"items":[]}]})"));
+        CanvasWidget canvas;
+        char* error = nullptr;
+        xn_note* note = xn_note_open(QFile::encodeName(path).constData(), QFile::encodeName(dir.path()).constData(), canvas.host(), &error);
+        QVERIFY2(note, error);
+        QCOMPARE(xn_note_page_count(note), 2);
+        canvas.resize(800, 1000);
+        canvas.show();
+        canvas.setNote(note);
+        canvas.setDark(false);
+        QSignalSpy views(&canvas, &CanvasWidget::viewChanged);
+
+        const QImage page = grab(canvas);
+        int ruled = 0;  // grey rule pixels down the middle of the page
+        for (int y = 100; y < 900; y++) {
+            const QColor c = page.pixelColor(400, y);
+            if (c != QColor(Qt::white) && c.red() < 250 && c.red() > 80) ruled++;
+        }
+        QVERIFY2(ruled > 5, "the page is ruled");
+
+        const int before = views.count();
+        QTest::wheelEvent(&canvas, QPointF(400, 500), QPoint(0, -120));
+        QVERIFY(views.count() > before);
+        xn_editor_zoom_at(canvas.editor(), 400, 500, 1.5);
+        QVERIFY(views.count() > before + 1);
+
+        canvas.setDark(true);
+        QVERIFY(grab(canvas).pixelColor(400, 500).lightness() < 60);
+
+        canvas.setNote(nullptr);
+        xn_note_close(note);
     }
 
     /* The highlighter multiplies over what is under it: yellow on paper, the red ink stays red. */

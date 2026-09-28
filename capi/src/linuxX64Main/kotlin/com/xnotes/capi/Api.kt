@@ -208,7 +208,15 @@ internal class CEditor(note: CNote, private val host: xn_host) {
     private val sharpSettle = Runnable { state.requestSharpViewport() }
 
     init {
+        // Page ruling; embedded PDF pages are not rendered yet, so they show only their margins.
+        state.paintPageBackground = { page, renderer, _, region -> state.paintRuling(page, renderer, region) }
         controller.setTool(Tool.PEN)
+    }
+
+    /** Zoom or scroll moved outside a gesture: the host refreshes its view and repaints. */
+    fun viewChanged() {
+        host.view_changed!!.invoke(host.ctx)
+        host.request_render!!.invoke(host.ctx)
     }
 
     fun setViewport(width: Int, height: Int, pxPerDp: Double) {
@@ -235,6 +243,7 @@ internal class CEditor(note: CNote, private val host: xn_host) {
         palette = p
         state.palette = p
         state.invalidateAllCaches()
+        host.request_render!!.invoke(host.ctx)
     }
 
     fun runTask(id: ULong) = scheduler.run(id)
@@ -343,10 +352,15 @@ fun xnEditorZoomStep(editor: COpaquePointer?, zoomIn: Int) = guard(Unit) {
 fun xnEditorZoomAt(editor: COpaquePointer?, x: Double, y: Double, factor: Double) = guard(Unit) {
     val e = editor!!.editor()
     e.state.setZoomAnchored(Pt(x, y), e.state.zoom * factor)
+    e.viewChanged()
 }
 
 @CName("xn_editor_scroll_by")
-fun xnEditorScrollBy(editor: COpaquePointer?, dx: Double, dy: Double) = guard(Unit) { editor!!.editor().state.scrollBy(dx, dy) }
+fun xnEditorScrollBy(editor: COpaquePointer?, dx: Double, dy: Double) = guard(Unit) {
+    val e = editor!!.editor()
+    e.state.scrollBy(dx, dy)
+    e.viewChanged()
+}
 
 @CName("xn_editor_fit_width")
 fun xnEditorFitWidth(editor: COpaquePointer?) = guard(Unit) { editor!!.editor().editor.fitWidth() }
