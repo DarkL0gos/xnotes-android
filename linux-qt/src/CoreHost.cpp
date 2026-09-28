@@ -1,0 +1,415 @@
+#include "CoreHost.h"
+
+#include <QFontMetricsF>
+#include <QImageReader>
+#include <QPainterPath>
+#include <QTextLayout>
+#include <QTimer>
+
+#include <cmath>
+
+namespace xn {
+
+// --- layers ------------------------------------------------------------------------------------
+
+void PainterTarget::save() {
+    painter()->save();
+    saveIsLayer_.push_back(false);
+}
+
+void PainterTarget::saveLayer(const QRectF& bounds, double alpha, int blend) {
+    QPainter* parent = painter();
+    // The layer covers the bounds in device space, clipped to what the parent can show.
+    QRect device = parent->transform().mapRect(bounds).toAlignedRect();
+    if (parent->hasClipping()) device &= parent->transform().mapRect(parent->clipBoundingRect()).toAlignedRect();
+    device &= QRect(0, 0, parent->device()->width(), parent->device()->height());
+    if (device.isEmpty()) device = QRect(0, 0, 1, 1);
+    Layer layer;
+    layer.image = QImage(device.size(), QImage::Format_ARGB32_Premultiplied);
+    layer.image.fill(Qt::transparent);
+    layer.painter = std::make_unique<QPainter>(&layer.image);
+    layer.painter->setRenderHints(parent->renderHints());
+    QTransform t = parent->transform();
+    t *= QTransform::fromTranslate(-device.x(), -device.y());
+    layer.painter->setTransform(t);
+    layer.deviceRect = device;
+    layer.alpha = alpha;
+    layer.blend = blend;
+    layers_.push_back(std::move(layer));
+    saveIsLayer_.push_back(true);
+}
+
+void PainterTarget::restore() {
+    if (saveIsLayer_.empty()) return;
+    bool isLayer = saveIsLayer_.back();
+    saveIsLayer_.pop_back();
+    if (!isLayer) {
+        painter()->restore();
+        return;
+    }
+    Layer layer = std::move(layers_.back());
+    layers_.pop_back();
+    layer.painter->end();
+    QPainter* parent = painter();
+    parent->save();
+    parent->resetTransform();
+    parent->setOpacity(layer.alpha);
+    parent->setCompositionMode(layer.blend == XN_BLEND_MULTIPLY ? QPainter::CompositionMode_Multiply
+                               : layer.blend == XN_BLEND_SCREEN ? QPainter::CompositionMode_Screen
+                                                                : QPainter::CompositionMode_SourceOver);
+    parent->drawImage(layer.deviceRect.topLeft(), layer.image);
+    parent->restore();
+}
+
+void Surface::endPainting() {
+    if (painter && painter->isActive()) painter->end();
+}
+
+// --- the renderer vtable -------------------------------------------------------------------------
+
+namespace {
+
+PainterTarget* T(void* r) { return static_cast<PainterTarget*>(r); }
+QPainter* P(void* r) { return T(r)->painter(); }
+
+QPen toPen(const xn_pen* p) {
+    QPen pen(toColor(p->color));
+    pen.setWidthF(p->width);
+    pen.setCosmetic(p->cosmetic != 0);
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+    if (p->dashed && p->width > 0) {
+        // Qt measures dashes in pen widths.
+        pen.setDashPattern({p->dash_on / p->width, p->dash_gap / p->width});
+        pen.setDashOffset(p->dash_phase / p->width);
+        pen.setCapStyle(Qt::FlatCap);
+    }
+    return pen;
+}
+
+QString fromUtf16(const uint16_t* text, int len) {
+    return len > 0 ? QString::fromUtf16(reinterpret_cast<const char16_t*>(text), len) : QString();
+}
+
+void rSave(void* r) { T(r)->save(); }
+void rRestore(void* r) { T(r)->restore(); }
+void rSaveLayer(void* r, double x, double y, double w, double h, double alpha, int blend) {
+    T(r)->saveLayer(QRectF(x, y, w, h), alpha, blend);
+}
+void rTranslate(void* r, double dx, double dy) { P(r)->translate(dx, dy); }
+void rScale(void* r, double sx, double sy) { P(r)->scale(sx, sy); }
+void rRotate(void* r, double degrees) { P(r)->rotate(degrees); }
+void rClipRect(void* r, double x, double y, double w, double h) { P(r)->setClipRect(QRectF(x, y, w, h), Qt::IntersectClip); }
+void rClear(void* r) {
+    QPainter* p = P(r);
+    p->save();
+    p->setCompositionMode(QPainter::CompositionMode_Clear);
+    QRectF area = p->hasClipping() ? p->clipBoundingRect() : p->transform().inverted().mapRect(QRectF(0, 0, p->device()->width(), p->device()->height()));
+    p->fillRect(area, Qt::transparent);
+    p->restore();
+}
+void rFillRect(void* r, double x, double y, double w, double h, xn_rgba c) { P(r)->fillRect(QRectF(x, y, w, h), toColor(c)); }
+void rFillPolygon(void* r, const double* xy, int n, xn_rgba c, int rule) {
+    QPolygonF poly;
+    poly.reserve(n);
+    for (int i = 0; i < n; i++) poly << QPointF(xy[2 * i], xy[2 * i + 1]);
+    QPainterPath path;
+    path.setFillRule(rule == XN_FILL_EVEN_ODD ? Qt::OddEvenFill : Qt::WindingFill);
+    path.addPolygon(poly);
+    path.closeSubpath();
+    P(r)->fillPath(path, toColor(c));
+}
+void rFillEllipse(void* r, double cx, double cy, double rx, double ry, xn_rgba c) {
+    QPainterPath path;
+    path.addEllipse(QPointF(cx, cy), rx, ry);
+    P(r)->fillPath(path, toColor(c));
+}
+
+/*
+ * The ink ribbon: every disc plus the quad bridging each consecutive pair, filled as one nonzero
+ * path so the pieces merge without seams. Every piece winds the same way as Qt's ellipses, or the
+ * overlaps would cancel into holes.
+ */
+void rFillDiskRibbon(void* r, const float* centers, const float* radii, int from, int count, xn_rgba c) {
+    if (count <= 0) return;
+    QPainterPath path;
+    path.setFillRule(Qt::WindingFill);
+    const int end = from + count;
+    for (int i = from; i + 1 < end; i++) {
+        const double x0 = centers[2 * i], y0 = centers[2 * i + 1], x1 = centers[2 * i + 2], y1 = centers[2 * i + 3];
+        const double len = std::hypot(x1 - x0, y1 - y0);
+        if (len < 1e-9) continue;
+        const double nx = -(y1 - y0) / len, ny = (x1 - x0) / len;
+        const double r0 = radii[i], r1 = radii[i + 1];
+        const QPointF a(x0 + nx * r0, y0 + ny * r0), b(x1 + nx * r1, y1 + ny * r1);
+        const QPointF cc(x1 - nx * r1, y1 - ny * r1), d(x0 - nx * r0, y0 - ny * r0);
+        const double cross = (b.x() - a.x()) * (cc.y() - a.y()) - (b.y() - a.y()) * (cc.x() - a.x());
+        if (cross >= 0) {
+            path.moveTo(a); path.lineTo(b); path.lineTo(cc); path.lineTo(d);
+        } else {
+            path.moveTo(d); path.lineTo(cc); path.lineTo(b); path.lineTo(a);
+        }
+        path.closeSubpath();
+    }
+    for (int i = from; i < end; i++) {
+        const double rad = radii[i];
+        if (rad > 0) path.addEllipse(QPointF(centers[2 * i], centers[2 * i + 1]), rad, rad);
+    }
+    P(r)->fillPath(path, toColor(c));
+}
+
+void rStrokePolyline(void* r, const double* xy, int n, int closed, const xn_pen* pen) {
+    QPolygonF poly;
+    poly.reserve(n);
+    for (int i = 0; i < n; i++) poly << QPointF(xy[2 * i], xy[2 * i + 1]);
+    QPainter* p = P(r);
+    p->save();
+    p->setPen(toPen(pen));
+    p->setBrush(Qt::NoBrush);
+    if (closed) p->drawPolygon(poly); else p->drawPolyline(poly);
+    p->restore();
+}
+void rStrokeRect(void* r, double x, double y, double w, double h, const xn_pen* pen) {
+    QPainter* p = P(r);
+    p->save();
+    QPen qp = toPen(pen);
+    qp.setJoinStyle(Qt::MiterJoin);
+    p->setPen(qp);
+    p->setBrush(Qt::NoBrush);
+    p->drawRect(QRectF(x, y, w, h));
+    p->restore();
+}
+void rStrokeEllipse(void* r, double cx, double cy, double rx, double ry, const xn_pen* pen) {
+    QPainter* p = P(r);
+    p->save();
+    p->setPen(toPen(pen));
+    p->setBrush(Qt::NoBrush);
+    p->drawEllipse(QPointF(cx, cy), rx, ry);
+    p->restore();
+}
+void rDrawSurface(void* r, void* surface, const double* dest, const double* src, double alpha, int blend) {
+    auto* s = static_cast<Surface*>(surface);
+    if (!s) return;
+    s->endPainting();
+    QPainter* p = P(r);
+    p->save();
+    p->setOpacity(alpha);
+    if (blend == XN_BLEND_MULTIPLY) p->setCompositionMode(QPainter::CompositionMode_Multiply);
+    else if (blend == XN_BLEND_SCREEN) p->setCompositionMode(QPainter::CompositionMode_Screen);
+    QRectF target(dest[0], dest[1], dest[2], dest[3]);
+    QRectF source = src ? QRectF(src[0], src[1], src[2], src[3]) : QRectF(s->image.rect());
+    p->drawImage(target, s->image, source);
+    p->restore();
+}
+
+/* Decoded images at the size they were last drawn, so a frame does not decode again. */
+QCache<QString, QImage>& imageCache() {
+    static QCache<QString, QImage> cache(64 * 1024 * 1024);  // bytes, via the cost below
+    return cache;
+}
+
+void rDrawImage(void* r, const char* path, double x, double y, double w, double h, int orientation, double angle) {
+    QPainter* p = P(r);
+    const QRectF dest(x, y, w, h);
+    const bool turned = ((orientation % 180) + 180) % 180 == 90;
+    const double scale = std::max(1.0, std::hypot(p->transform().m11(), p->transform().m12()));
+    const QSize want(std::ceil((turned ? h : w) * scale), std::ceil((turned ? w : h) * scale));
+    const QString key = QString::fromUtf8(path) + QStringLiteral("@%1x%2").arg(want.width()).arg(want.height());
+    QImage* img = imageCache().object(key);
+    if (!img) {
+        QImageReader reader(QString::fromUtf8(path));
+        reader.setAutoTransform(false);
+        if (reader.size().isValid()) reader.setScaledSize(reader.size().scaled(want, Qt::KeepAspectRatioByExpanding).boundedTo(reader.size()));
+        QImage decoded = reader.read();
+        if (decoded.isNull()) return;
+        img = new QImage(std::move(decoded));
+        imageCache().insert(key, img, int(std::min<qsizetype>(img->sizeInBytes(), 64 * 1024 * 1024)));
+    }
+    p->save();
+    p->setRenderHint(QPainter::SmoothPixmapTransform, true);
+    p->translate(dest.center());
+    p->rotate(orientation + angle * 180.0 / M_PI);
+    const double iw = turned ? h : w, ih = turned ? w : h;
+    p->drawImage(QRectF(-iw / 2, -ih / 2, iw, ih), *img);
+    p->restore();
+}
+
+void rDrawText(void* r, const uint16_t* text, int len, double x, double y, double w, double h, const xn_font* font,
+               xn_rgba c, int wordWrap, int alignLeft, int alignTop) {
+    QPainter* p = P(r);
+    p->save();
+    p->setFont(CoreHost::fontFor(font));
+    p->setPen(toColor(c));
+    int flags = (wordWrap ? Qt::TextWordWrap : 0) | (alignLeft ? Qt::AlignLeft : Qt::AlignHCenter) |
+                (alignTop ? Qt::AlignTop : Qt::AlignVCenter);
+    p->drawText(QRectF(x, y, w, h), flags, fromUtf16(text, len));
+    p->restore();
+}
+
+void rDrawTextRun(void* r, const uint16_t* text, int len, double x, double baseline, const xn_font* font, xn_rgba c) {
+    QPainter* p = P(r);
+    p->save();
+    p->setFont(CoreHost::fontFor(font));
+    p->setPen(toColor(c));
+    p->drawText(QPointF(x, baseline), fromUtf16(text, len));
+    p->restore();
+}
+
+const xn_renderer_vt kVtable = {
+    rSave, rRestore, rSaveLayer, rTranslate, rScale, rRotate, rClipRect, rClear,
+    rFillRect, rFillPolygon, rFillEllipse, rFillDiskRibbon,
+    rStrokePolyline, rStrokeRect, rStrokeEllipse,
+    rDrawSurface, rDrawImage, rDrawText, rDrawTextRun,
+};
+
+CoreHost* H(void* ctx) { return static_cast<CoreHost*>(ctx); }
+
+}  // namespace
+
+const xn_renderer_vt* CoreHost::vtable() { return &kVtable; }
+
+QFont CoreHost::fontFor(const xn_font* f) {
+    const QString face = fromUtf16(f->face, f->face_len);
+    QFont font;
+    if (face == QLatin1String("serif")) font.setFamilies({QStringLiteral("serif")});
+    else if (face == QLatin1String("mono") || face.isEmpty()) font.setFamilies({QStringLiteral("monospace")});
+    else if (face == QLatin1String("sans")) font.setFamilies({QStringLiteral("sans-serif")});
+    else if (face == QLatin1String("hand")) font.setFamilies({QStringLiteral("cursive"), QStringLiteral("sans-serif")});
+    else font.setFamilies({face, QStringLiteral("sans-serif")});
+    // Points at the page's 150 px per inch, in pixels: sized the same whatever device draws it.
+    font.setPixelSize(std::max(1, int(std::lround(f->point_size * 150.0 / 72.0))));
+    font.setStyleHint(face == QLatin1String("serif") ? QFont::Serif : face == QLatin1String("sans") ? QFont::SansSerif : QFont::Monospace);
+    font.setBold(f->bold != 0);
+    font.setItalic(f->italic != 0);
+    return font;
+}
+
+// --- host services ---------------------------------------------------------------------------
+
+CoreHost::CoreHost() {
+    host_.ctx = this;
+    host_.renderer = &kVtable;
+    host_.surface_create = surfaceCreate;
+    host_.surface_fill = surfaceFill;
+    host_.surface_renderer = surfaceRenderer;
+    host_.surface_release = surfaceRelease;
+    host_.text_measure = textMeasure;
+    host_.text_metrics = textMetrics;
+    host_.text_advances = textAdvances;
+    host_.image_probe = imageProbe;
+    host_.request_render = requestRender;
+    host_.content_changed = contentChanged;
+    host_.view_changed = viewChanged;
+    host_.notice = notice;
+    host_.post_delayed = postDelayed;
+    host_.cancel_task = cancelTask;
+    host_.post_frame = postFrame;
+}
+
+CoreHost::~CoreHost() {
+    for (QTimer* t : std::as_const(timers_)) delete t;
+}
+
+void* CoreHost::surfaceCreate(void* ctx, int w, int h, double) {
+    auto* s = new Surface;
+    s->image = QImage(std::max(1, w), std::max(1, h), QImage::Format_ARGB32_Premultiplied);
+    s->image.fill(Qt::transparent);
+    H(ctx)->liveSurfaces_++;
+    return s;
+}
+
+void CoreHost::surfaceFill(void*, void* surface, xn_rgba c) {
+    auto* s = static_cast<Surface*>(surface);
+    s->endPainting();
+    s->image.fill(toColor(c));
+}
+
+void* CoreHost::surfaceRenderer(void*, void* surface) {
+    auto* s = static_cast<Surface*>(surface);
+    s->endPainting();
+    s->painter = std::make_unique<QPainter>(&s->image);
+    s->painter->setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform | QPainter::TextAntialiasing);
+    s->target = std::make_unique<PainterTarget>(s->painter.get());
+    return s->target.get();
+}
+
+void CoreHost::surfaceRelease(void* ctx, void* surface) {
+    auto* s = static_cast<Surface*>(surface);
+    s->endPainting();
+    delete s;
+    H(ctx)->liveSurfaces_--;
+}
+
+void CoreHost::textMeasure(void*, const uint16_t* text, int len, const xn_font* font, double wrap, int wordWrap, double* out) {
+    const QFont f = fontFor(font);
+    QString s = fromUtf16(text, len);
+    if (s.isEmpty()) s = QStringLiteral(" ");  // one line tall, as the core expects
+    QFontMetricsF fm(f);
+    QRectF rect = fm.boundingRect(QRectF(0, 0, wrap, 1e9), (wordWrap ? Qt::TextWordWrap : 0) | Qt::AlignLeft | Qt::AlignTop, s);
+    out[0] = 0;
+    out[1] = 0;
+    out[2] = wrap;
+    out[3] = rect.height();
+}
+
+void CoreHost::textMetrics(void*, const xn_font* font, double* ascent, double* descent) {
+    QFontMetricsF fm(fontFor(font));
+    *ascent = fm.ascent();
+    *descent = fm.descent() + fm.leading();
+}
+
+void CoreHost::textAdvances(void*, const uint16_t* text, int len, const xn_font* font, double* out) {
+    // Per UTF-16 unit, from the laid-out line so the sum matches what drawText places; the second
+    // unit of a surrogate pair gets 0.
+    const QString s = fromUtf16(text, len);
+    QTextLayout layout(s, fontFor(font));
+    layout.beginLayout();
+    QTextLine line = layout.createLine();
+    layout.endLayout();
+    double prev = 0;
+    for (int i = 0; i < len; i++) {
+        double x = line.isValid() ? line.cursorToX(i + 1) : 0;
+        out[i] = x - prev;
+        prev = x;
+    }
+}
+
+int CoreHost::imageProbe(void*, const char* path, int* w, int* h) {
+    QImageReader reader(QString::fromUtf8(path));
+    QSize size = reader.size();
+    if (!size.isValid()) return 0;
+    *w = size.width();
+    *h = size.height();
+    return 1;
+}
+
+void CoreHost::requestRender(void* ctx) { if (H(ctx)->onRender) H(ctx)->onRender(); }
+void CoreHost::contentChanged(void* ctx) { if (H(ctx)->onContentChanged) H(ctx)->onContentChanged(); }
+void CoreHost::viewChanged(void* ctx) { if (H(ctx)->onViewChanged) H(ctx)->onViewChanged(); }
+void CoreHost::notice(void* ctx, int code) { if (H(ctx)->onNotice) H(ctx)->onNotice(code); }
+
+void CoreHost::schedule(uint64_t task, int delayMs) {
+    auto* timer = new QTimer;
+    timer->setSingleShot(true);
+    timer->setTimerType(Qt::PreciseTimer);
+    QObject::connect(timer, &QTimer::timeout, [this, task, timer] {
+        timers_.remove(task);
+        timer->deleteLater();
+        if (runTask) runTask(task);
+    });
+    timers_.insert(task, timer);
+    timer->start(std::max(0, delayMs));
+}
+
+void CoreHost::postDelayed(void* ctx, uint64_t task, int64_t delayMs) { H(ctx)->schedule(task, int(std::min<int64_t>(delayMs, 1 << 30))); }
+
+void CoreHost::cancelTask(void* ctx, uint64_t task) {
+    if (QTimer* t = H(ctx)->timers_.take(task)) {
+        t->stop();
+        t->deleteLater();
+    }
+}
+
+void CoreHost::postFrame(void* ctx, uint64_t task) { H(ctx)->schedule(task, 16); }
+
+}  // namespace xn

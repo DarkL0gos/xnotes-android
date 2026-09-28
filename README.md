@@ -110,11 +110,25 @@ cmake -S native/highlight -B build/native-highlight
 cmake --build build/native-highlight -j && ctest --test-dir build/native-highlight
 ```
 
-The core also builds as a native shared library for non-JVM hosts (the planned Qt app):
+The core also builds as a native shared library for non-JVM hosts such as the Qt app:
 `libxnotes.so`, with the C API in `capi/include/xnotes.h`. Build it and run its C test
 (needs gcc; no JVM at run time):
 
 ```bash
 ./gradlew -PdesktopOnly=true :capi:cTest
 # library: capi/build/bin/linuxX64/xnotesReleaseShared/libxnotes.so
+```
+
+### Qt app (Linux)
+
+`linux-qt/` is a Qt 6 host of `libxnotes.so`: it edits `.xnote` files with pen pressure from
+tablets (the pen's eraser end erases), the mouse and touch, and follows the display's scale
+natively on Wayland. Needs Qt 6 development packages (`qt6-base-dev`, and `qt6-wayland` to run
+on Wayland) and CMake:
+
+```bash
+./gradlew -PdesktopOnly=true :capi:linkXnotesReleaseSharedLinuxX64
+cmake -S linux-qt -B linux-qt/build
+cmake --build linux-qt/build -j && ctest --test-dir linux-qt/build
+./linux-qt/build/xnotes-qt [note.xnote]
 ```
