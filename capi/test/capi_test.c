@@ -154,7 +154,14 @@ static void t_metrics(void* ctx, const xn_font* f, double* a, double* d) {
 static void t_advances(void* ctx, const uint16_t* t, int n, const xn_font* f, double* out) {
     for (int i = 0; i < n; i++) out[i] = f->point_size * 0.5;
 }
-static int i_probe(void* ctx, const char* path, int* w, int* h) { return 0; }
+/* "Images" whose path ends in .png probe as 800x600; everything else is unreadable. */
+static int i_probe(void* ctx, const char* path, int* w, int* h) {
+    size_t n = strlen(path);
+    if (n < 4 || strcmp(path + n - 4, ".png") != 0) return 0;
+    *w = 800;
+    *h = 600;
+    return 1;
+}
 static void h_render(void* ctx) { ((host_state*)ctx)->renders++; }
 static void h_content(void* ctx) { ((host_state*)ctx)->content++; }
 static void h_view(void* ctx) { ((host_state*)ctx)->view++; }
@@ -365,6 +372,13 @@ int main(int argc, char** argv) {
     xn_editor_undo(ed);
     CHECK(xn_note_item_count(note, page) == 1, "undo removes the box");
     xn_editor_set_tool(ed, "pen");
+
+    /* v2: images. */
+    CHECK(xn_editor_insert_image(ed, "/nonexistent/file.txt", 0, 0, 0) == 0, "an unreadable image is refused");
+    CHECK(xn_editor_insert_image(ed, "/tmp/picture.png", 1, 400, 500) == 1, "insert an image");
+    CHECK(xn_note_item_count(note, page) == 2, "the image is on the page (%d)", xn_note_item_count(note, page));
+    xn_editor_undo(ed);
+    CHECK(xn_note_item_count(note, page) == 1, "undo removes it");
 
     /* Pages and notices. */
     xn_editor_add_page(ed);

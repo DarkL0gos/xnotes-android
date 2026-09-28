@@ -54,6 +54,7 @@ private:
     QByteArray shapeKind_ = "rectangle";
     bool shapeFill_ = false;
     bool shapeDashed_ = false;
+    bool clipboardIsNewer_ = false;  // the system clipboard changed after the last in-app copy
 
     void install(xn_note* note, std::unique_ptr<QTemporaryDir> workDir, const QString& path);
     void buildUi();
@@ -71,4 +72,8 @@ private:
     void pasteAt(QPointF widget);
     void selectAll();
     void showContextMenu(QPointF at, bool onLocked);
+    QString workFile(const QString& suffix);
+    void chooseImage();
+    bool insertImageFile(const QString& path, QPointF at, bool atPoint);
+    bool insertImage(const QString& file, QPointF at, bool atPoint);
 };

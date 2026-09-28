@@ -318,6 +318,39 @@ private slots:
         xn_note_close(note);
     }
 
+    /* An image file on the page, drawn from the file; it survives save and reopen. */
+    void image() {
+        QTemporaryDir dir;
+        const QString png = dir.filePath(QStringLiteral("red.png"));
+        QImage red(200, 100, QImage::Format_RGB32);
+        red.fill(QColor(255, 0, 0));
+        QVERIFY(red.save(png));
+        xn_note* note = xn_note_new(1);
+        CanvasWidget canvas;
+        canvas.resize(800, 1000);
+        canvas.show();
+        canvas.setNote(note);
+        canvas.setDark(false);
+        QVERIFY(!xn_editor_insert_image(canvas.editor(), "/no/such.png", 0, 0, 0));
+        QVERIFY(xn_editor_insert_image(canvas.editor(), QFile::encodeName(png).constData(), 1, 400, 500));
+        QCOMPARE(xn_note_item_count(note, 0), 1);
+        QVERIFY2(inkPixels(grab(canvas), QRect(380, 490, 40, 20)) == 40 * 20, "the image is drawn where it was put");
+
+        const QByteArray saved = QFile::encodeName(dir.filePath(QStringLiteral("img.xnote")));
+        char* error = nullptr;
+        QVERIFY(xn_note_save(note, saved.constData(), canvas.host(), &error));
+        canvas.setNote(nullptr);
+        xn_note_close(note);
+        QFile::remove(png);  // the saved note carries its own copy
+        QTemporaryDir work;
+        xn_note* back = xn_note_open(saved.constData(), QFile::encodeName(work.path()).constData(), canvas.host(), &error);
+        QVERIFY2(back, error);
+        canvas.setNote(back);
+        QVERIFY(inkPixels(grab(canvas), canvas.rect()) > 1000);
+        canvas.setNote(nullptr);
+        xn_note_close(back);
+    }
+
     void eraserEndErases() {
         xn_note* note = xn_note_new(1);
         CanvasWidget canvas;

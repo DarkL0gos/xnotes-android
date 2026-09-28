@@ -2,6 +2,7 @@
 
 #include "TextOverlay.h"
 
+#include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPointingDevice>
@@ -36,6 +37,7 @@ CanvasWidget::CanvasWidget(QWidget* parent) : QWidget(parent) {
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
     setCursor(Qt::CrossCursor);
+    setAcceptDrops(true);
     clock_.start();
 
     core_.runTask = [this](uint64_t task) { if (editor_) xn_editor_run_task(editor_, task); };
@@ -253,6 +255,31 @@ void CanvasWidget::wheelEvent(QWheelEvent* e) {
     QPointF delta = !e->pixelDelta().isNull() ? QPointF(e->pixelDelta()) : notches * kWheelStepPx;
     if (e->modifiers() & Qt::ShiftModifier && delta.x() == 0) delta = QPointF(delta.y(), 0);
     xn_editor_scroll_by(editor_, -delta.x() * dpr_, -delta.y() * dpr_);
+}
+
+// --- drops ---------------------------------------------------------------------------------------
+
+namespace {
+
+QStringList localFiles(const QMimeData* mime) {
+    QStringList files;
+    if (!mime || !mime->hasUrls()) return files;
+    for (const QUrl& url : mime->urls())
+        if (url.isLocalFile()) files << url.toLocalFile();
+    return files;
+}
+
+}  // namespace
+
+void CanvasWidget::dragEnterEvent(QDragEnterEvent* e) {
+    if (editor_ && !localFiles(e->mimeData()).isEmpty()) e->acceptProposedAction();
+}
+
+void CanvasWidget::dropEvent(QDropEvent* e) {
+    const QStringList files = localFiles(e->mimeData());
+    if (files.isEmpty()) return;
+    e->acceptProposedAction();
+    emit filesDropped(files, e->position());
 }
 
 // --- touch ---------------------------------------------------------------------------------------

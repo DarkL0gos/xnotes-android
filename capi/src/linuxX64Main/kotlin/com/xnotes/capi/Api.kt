@@ -250,6 +250,7 @@ internal class CEditor(note: CNote, private val host: xn_host) {
         )
     })
     private val sharpSettle = Runnable { state.requestSharpViewport() }
+    val images = CImageCodec(host)
 
     init {
         // Page ruling; embedded PDF pages are not rendered yet, so they show only their margins.
@@ -507,6 +508,16 @@ fun xnEditorSetTextFace(editor: COpaquePointer?, face: String?) = guard(Unit) {
 
 @CName("xn_editor_set_text_size")
 fun xnEditorSetTextSize(editor: COpaquePointer?, size: Double) = guard(Unit) { editor!!.editor().controller.setTextPointSize(size) }
+
+@CName("xn_editor_insert_image")
+fun xnEditorInsertImage(editor: COpaquePointer?, path: String?, atPoint: Int, x: Double, y: Double): Int = guard(0) {
+    val e = editor!!.editor()
+    val size = e.images.probeFile(path ?: return@guard 0) ?: return@guard 0
+    if (size.width <= 0 || size.height <= 0) return@guard 0
+    val at = if (atPoint != 0) e.state.viewportToContent(Pt(x, y)) else null
+    e.editor.insertImage(fileOf(path), size.width, size.height, at)
+    1
+}
 
 @CName("xn_editor_has_selection")
 fun xnEditorHasSelection(editor: COpaquePointer?): Int = guard(0) { if (editor!!.editor().controller.hasSelection) 1 else 0 }

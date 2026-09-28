@@ -1444,33 +1444,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
             message = appContext.getString(R.string.err_read_image)
             return
         }
-        val index = (atContent?.let { state.pageIndexAtContent(it) } ?: state.currentPageIndex())
-            .coerceIn(0, state.document.pages.lastIndex)
-        val page = state.document.pages[index]
-        val pr = state.pageRects.getOrNull(index)
-        val maxW = page.width * 0.6
-        val maxH = page.height * 0.6
-        val scale = minOf(1.0, maxW / size.width, maxH / size.height)
-        val w = size.width * scale
-        val h = size.height * scale
-        // Placed anywhere on the paper, margins included, but never hanging off it.
-        val cover = state.footprint(page)
-        val rect = if (atContent != null && pr != null) {
-            Rect(
-                (atContent.x - pr.left - w / 2 + cover.left).coerceIn(cover.left, cover.right - w),
-                (atContent.y - pr.top - h / 2 + cover.top).coerceIn(cover.top, cover.bottom - h),
-                w, h,
-            )
-        } else {
-            Rect((page.width - w) / 2.0, (page.height - h) / 2.0, w, h)
-        }
-        val item = ImageItem(ImageData(file, size.width, size.height), rect)
-        page.items.add(item)
-        state.appendToCache(page, item)
-        history.push(AddItem(page, item))
-        state.document.dirty = true
-        refreshContent()
-        view.requestRender()
+        core.insertImage(file, size.width, size.height, atContent)
     }
 
     /** Save an encoded image into the on-disk sticker library (validated by a probe decode). */

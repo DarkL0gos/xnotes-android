@@ -51,6 +51,8 @@ signals:
     /* A long press asked for a context menu at a widget point; onLocked: over a locked item. */
     void contextMenu(QPointF at, bool onLocked);
     void toolChanged(QString toolId);
+    /* Image files dropped on the canvas, at a widget point. */
+    void filesDropped(QStringList files, QPointF at);
 
 protected:
     bool event(QEvent* e) override;
@@ -62,6 +64,8 @@ protected:
     void leaveEvent(QEvent* e) override;
     void wheelEvent(QWheelEvent* e) override;
     void tabletEvent(QTabletEvent* e) override;
+    void dragEnterEvent(QDragEnterEvent* e) override;
+    void dropEvent(QDropEvent* e) override;
 
 private:
     xn::CoreHost core_;

@@ -2,7 +2,9 @@ package com.xnotes.editor
 
 import com.xnotes.canvas.CanvasState
 import com.xnotes.canvas.InteractionController
+import com.xnotes.core.geometry.Pt
 import com.xnotes.core.geometry.Rect
+import com.xnotes.core.history.AddItem
 import com.xnotes.core.history.AddPage
 import com.xnotes.core.history.Command
 import com.xnotes.core.history.CompositeCommand
@@ -11,6 +13,8 @@ import com.xnotes.core.history.EraseItems
 import com.xnotes.core.history.History
 import com.xnotes.core.model.CanvasItem
 import com.xnotes.core.model.Document
+import com.xnotes.core.model.ImageData
+import com.xnotes.core.model.ImageItem
 import com.xnotes.core.model.Orientation
 import com.xnotes.core.model.Page
 import com.xnotes.core.model.PageMargins
@@ -18,6 +22,7 @@ import com.xnotes.core.model.PageSize
 import com.xnotes.core.model.PageStyle
 import com.xnotes.core.model.deepCopy
 import com.xnotes.core.pal.TextMeasurer
+import com.xnotes.core.platform.File
 import com.xnotes.core.tools.Tool
 
 /** Something the editor refused or had nothing to do for; the host words it for the user. */
@@ -348,6 +353,41 @@ class NoteEditor(
         history.push(CompositeCommand(cmds))
         clearPageSelection()
         afterPageEdit()
+    }
+
+    // --- images ---
+
+    /**
+     * Put an image file of [width]×[height] pixels on a page, as one undoable edit: at most 60% of
+     * the page each way, centred on [atContent] (clamped onto the paper, margins included) or
+     * on the current page when null. The file must stay put while the note is open; saving embeds it.
+     */
+    fun insertImage(file: File, width: Int, height: Int, atContent: Pt? = null): ImageItem {
+        val index = (atContent?.let { state.pageIndexAtContent(it) } ?: state.currentPageIndex())
+            .coerceIn(0, state.document.pages.lastIndex)
+        val page = state.document.pages[index]
+        val pr = state.pageRects.getOrNull(index)
+        val scale = minOf(1.0, page.width * 0.6 / width, page.height * 0.6 / height)
+        val w = width * scale
+        val h = height * scale
+        val cover = state.footprint(page)
+        val rect = if (atContent != null && pr != null) {
+            Rect(
+                (atContent.x - pr.left - w / 2 + cover.left).coerceIn(cover.left, cover.right - w),
+                (atContent.y - pr.top - h / 2 + cover.top).coerceIn(cover.top, cover.bottom - h),
+                w, h,
+            )
+        } else {
+            Rect((page.width - w) / 2.0, (page.height - h) / 2.0, w, h)
+        }
+        val item = ImageItem(ImageData(file, width, height), rect)
+        page.items.add(item)
+        state.appendToCache(page, item)
+        history.push(AddItem(page, item))
+        state.document.dirty = true
+        host.contentChanged()
+        host.requestRender()
+        return item
     }
 
     // --- side-panel page selection (multi-select) ---

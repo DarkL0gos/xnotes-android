@@ -290,6 +290,17 @@ void xn_editor_text_commit(xn_editor* editor);
 void xn_editor_set_text_face(xn_editor* editor, const char* face);
 void xn_editor_set_text_size(xn_editor* editor, double point_size);
 
+/* --- images --- */
+
+/*
+ * Put an image file (UTF-8 path; any format the host's image_probe and draw_image read) on a
+ * page: at most 60% of the page, centred on the viewport point when at_point, else on the current
+ * page. The core keeps referring to the file until the note is closed (saving embeds its bytes),
+ * so the host copies it somewhere that lives as long, such as the note's work_dir. Returns 0 when
+ * the image cannot be read.
+ */
+int xn_editor_insert_image(xn_editor* editor, const char* path, int at_point, double x, double y);
+
 /* --- selection (lasso, select, long-press grab) --- */
 
 int xn_editor_has_selection(const xn_editor* editor);

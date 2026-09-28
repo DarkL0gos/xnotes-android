@@ -5,7 +5,11 @@
 
 #include <QApplication>
 #include <QCloseEvent>
+#include <QClipboard>
 #include <QColorDialog>
+#include <QImageReader>
+#include <QMimeData>
+#include <QUuid>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QSpinBox>
@@ -231,6 +235,8 @@ void MainWindow::buildUi() {
         connect(a, &QAction::triggered, this, [this, c] { setInk(c); });
     }
     colorAction_ = tools->addAction(QStringLiteral("Цвет…"), this, &MainWindow::chooseColor);
+    tools->addSeparator();
+    tools->addAction(QStringLiteral("Картинка…"), this, &MainWindow::chooseImage);
     colorAction_->setToolTip(QStringLiteral("Текущий цвет; нажмите, чтобы выбрать другой"));
 
     selectionBar_ = new SelectionBar(canvas_);
@@ -255,8 +261,12 @@ void MainWindow::buildUi() {
     bind(QKeySequence(Qt::Key_Escape), [this] { if (canvas_->editor()) xn_editor_escape(canvas_->editor()); });
     bind(QKeySequence(Qt::Key_Delete), [this] { if (canvas_->editor()) xn_editor_delete_selection(canvas_->editor()); });
     bind(QKeySequence::New, [this] { if (confirmDiscard()) newNote(); });
-    bind(QKeySequence::Copy, [this] { if (canvas_->editor()) xn_editor_copy(canvas_->editor()); });
-    bind(QKeySequence::Cut, [this] { if (canvas_->editor()) xn_editor_cut(canvas_->editor()); });
+    bind(QKeySequence::Copy, [this] { if (canvas_->editor()) xn_editor_copy(canvas_->editor()); clipboardIsNewer_ = false; });
+    bind(QKeySequence::Cut, [this] { if (canvas_->editor()) xn_editor_cut(canvas_->editor()); clipboardIsNewer_ = false; });
+    connect(QApplication::clipboard(), &QClipboard::dataChanged, this, [this] { clipboardIsNewer_ = true; });
+    connect(canvas_, &CanvasWidget::filesDropped, this, [this](const QStringList& files, QPointF at) {
+        for (const QString& f : files) insertImageFile(f, canvas_->toDevice(at), true);
+    });
     bind(QKeySequence::Paste, [this] { pasteAt(canvas_->mapFromGlobal(QCursor::pos())); });
     bind(QKeySequence(Qt::CTRL | Qt::Key_D), [this] { if (canvas_->editor()) xn_editor_duplicate(canvas_->editor()); });
     bind(QKeySequence::SelectAll, [this] { selectAll(); });
@@ -301,13 +311,63 @@ void MainWindow::applyToolSettings() {
     xn_editor_set_text_size(e, textSize_->value());
 }
 
+/*
+ * Paste what was copied last: items copied in the editor, or an image another program put on the
+ * system clipboard since.
+ */
 void MainWindow::pasteAt(QPointF widget) {
     auto* e = canvas_->editor();
-    if (!e || !xn_editor_can_paste(e)) return;
+    if (!e) return;
     if (!canvas_->rect().contains(widget.toPoint())) widget = QPointF(canvas_->width() / 2.0, canvas_->height() / 3.0);
     const QPointF at = canvas_->toDevice(widget);
+    const QMimeData* mime = QApplication::clipboard()->mimeData();
+    const bool image = mime && mime->hasImage();
+    if (image && (clipboardIsNewer_ || !xn_editor_can_paste(e))) {
+        const QImage picture = qvariant_cast<QImage>(mime->imageData());
+        const QString file = workFile(QStringLiteral("png"));
+        if (!picture.isNull() && !file.isEmpty() && picture.save(file, "PNG")) insertImage(file, at, true);
+        return;
+    }
+    if (!xn_editor_can_paste(e)) return;
     xn_editor_paste_at(e, at.x(), at.y());
     selectionBar_->refresh();
+}
+
+/* A fresh file name in the note's work folder, which lives as long as the note. */
+QString MainWindow::workFile(const QString& suffix) {
+    if (!workDir_ || !workDir_->isValid()) workDir_ = std::make_unique<QTemporaryDir>();
+    if (!workDir_->isValid()) return {};
+    return workDir_->filePath(QStringLiteral("inserted-%1.%2").arg(QUuid::createUuid().toString(QUuid::Id128), suffix));
+}
+
+void MainWindow::chooseImage() {
+    if (!canvas_->editor()) return;
+    QStringList patterns;
+    for (const QByteArray& f : QImageReader::supportedImageFormats()) patterns << QStringLiteral("*.") + QString::fromLatin1(f);
+    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Вставить картинку"), QString(),
+                                                      QStringLiteral("Изображения (%1)").arg(patterns.join(QLatin1Char(' '))));
+    if (!path.isEmpty()) insertImageFile(path, QPointF(), false);
+}
+
+/* Copy an image file into the work folder and put it on the page (at a device point, if given). */
+bool MainWindow::insertImageFile(const QString& path, QPointF at, bool atPoint) {
+    const QString copy = workFile(QFileInfo(path).suffix().isEmpty() ? QStringLiteral("img") : QFileInfo(path).suffix().toLower());
+    if (copy.isEmpty() || !QFile::copy(path, copy)) {
+        QMessageBox::warning(this, QStringLiteral("Картинка"), QStringLiteral("Не удалось скопировать %1").arg(path));
+        return false;
+    }
+    return insertImage(copy, at, atPoint);
+}
+
+bool MainWindow::insertImage(const QString& file, QPointF at, bool atPoint) {
+    auto* e = canvas_->editor();
+    if (!e) return false;
+    if (!xn_editor_insert_image(e, QFile::encodeName(file).constData(), atPoint ? 1 : 0, at.x(), at.y())) {
+        QFile::remove(file);
+        QMessageBox::warning(this, QStringLiteral("Картинка"), QStringLiteral("Не удалось прочитать изображение"));
+        return false;
+    }
+    return true;
 }
 
 void MainWindow::selectAll() {
@@ -322,7 +382,8 @@ void MainWindow::showContextMenu(QPointF at, bool onLocked) {
     if (!e) return;
     QMenu menu(this);
     QAction* paste = menu.addAction(QStringLiteral("Вставить"), this, [this, at] { pasteAt(at); });
-    paste->setEnabled(xn_editor_can_paste(e));
+    const QMimeData* mime = QApplication::clipboard()->mimeData();
+    paste->setEnabled(xn_editor_can_paste(e) || (mime && mime->hasImage()));
     if (onLocked) menu.addAction(QStringLiteral("Открепить"), this, [e] { xn_editor_unlock_pressed(e); });
     menu.addAction(QStringLiteral("Выделить всё"), this, &MainWindow::selectAll);
     menu.exec(canvas_->mapToGlobal(at.toPoint()));
@@ -344,7 +405,7 @@ void MainWindow::install(xn_note* note, std::unique_ptr<QTemporaryDir> workDir, 
     refreshView();
 }
 
-void MainWindow::newNote() { install(xn_note_new(1), nullptr, QString()); }
+void MainWindow::newNote() { install(xn_note_new(1), std::make_unique<QTemporaryDir>(), QString()); }
 
 bool MainWindow::open(const QString& path) {
     auto workDir = std::make_unique<QTemporaryDir>();
